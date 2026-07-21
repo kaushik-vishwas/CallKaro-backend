@@ -24,9 +24,9 @@ const ALLOWED_VIDEO_TYPES = new Set([
   'video/x-matroska',
 ]);
 
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
-const MAX_DOC_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_VIDEO_SIZE = 50 * 1024 * 1024; // 50 MB
+const MAX_IMAGE_SIZE = Number(process.env.UPLOAD_MAX_IMAGE_MB || 5) * 1024 * 1024;
+const MAX_DOC_SIZE = Number(process.env.UPLOAD_MAX_DOC_MB || 10) * 1024 * 1024;
+const MAX_VIDEO_SIZE = Number(process.env.UPLOAD_MAX_VIDEO_MB || 64) * 1024 * 1024;
 
 function imageFilter(_req, file, cb) {
   if (ALLOWED_IMAGE_TYPES.has(file.mimetype)) {

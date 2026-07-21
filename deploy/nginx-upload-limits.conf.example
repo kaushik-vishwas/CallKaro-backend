@@ -1,0 +1,8 @@
+# Add this inside the server { } block for callkaro.delicod.com
+# Then: sudo nginx -t && sudo systemctl reload nginx
+
+client_max_body_size 64M;
+client_body_timeout 300s;
+proxy_read_timeout 300s;
+proxy_send_timeout 300s;
+proxy_request_buffering off;
