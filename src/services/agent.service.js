@@ -285,89 +285,6 @@ async function getReceiverStats(agentId) {
   };
 }
 
-async function listPending(agentId) {
-  const receivers = await Receiver.find({
-    agentId,
-    status: 'pending_review',
-  })
-    .sort({submittedAt: -1, updatedAt: -1})
-    .lean();
-  return receivers.map(publicPendingRow);
-}
-
-async function approveReceiver(agentId, receiverId) {
-  const receiver = await getReceiverForAgent(agentId, receiverId);
-  if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
-  if (receiver.status !== 'pending_review') {
-    return {
-      ok: false,
-      message: 'Only receivers pending review can be approved.',
-      status: 400,
-    };
-  }
-  receiver.status = 'active';
-  receiver.activatedAt = new Date();
-  receiver.rejectionReason = '';
-  await receiver.save();
-  return {ok: true, receiver};
-}
-
-async function rejectReceiver(agentId, receiverId, reason) {
-  if (!reason || !String(reason).trim()) {
-    return {ok: false, message: 'Rejection reason is required.', status: 400};
-  }
-  const receiver = await getReceiverForAgent(agentId, receiverId);
-  if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
-  if (receiver.status !== 'pending_review') {
-    return {
-      ok: false,
-      message: 'Only receivers pending review can be rejected.',
-      status: 400,
-    };
-  }
-  receiver.status = 'rejected';
-  receiver.rejectionReason = String(reason).trim();
-  await receiver.save();
-  return {ok: true, receiver};
-}
-
-async function requestChanges(agentId, receiverId, note) {
-  const receiver = await getReceiverForAgent(agentId, receiverId);
-  if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
-  if (receiver.status !== 'pending_review') {
-    return {
-      ok: false,
-      message: 'Only receivers pending review can be sent back.',
-      status: 400,
-    };
-  }
-  receiver.status = 'pending_onboarding';
-  receiver.rejectionReason = note ? String(note).trim() : 'Changes requested';
-  await receiver.save();
-  return {ok: true, receiver};
-}
-
-async function setReceiverStatus(agentId, receiverId, status, reason = '') {
-  if (!['active', 'inactive'].includes(status)) {
-    return {ok: false, message: 'Status must be active or inactive.', status: 400};
-  }
-  const receiver = await getReceiverForAgent(agentId, receiverId);
-  if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
-  receiver.status = status;
-  if (status === 'inactive') {
-    receiver.rejectionReason =
-      String(reason || '').trim() ||
-      receiver.rejectionReason ||
-      'Profile terminated by agent.';
-  }
-  if (status === 'active') {
-    receiver.rejectionReason = '';
-    receiver.activatedAt = receiver.activatedAt || new Date();
-  }
-  await receiver.save();
-  return {ok: true, receiver};
-}
-
 async function getCredentials(agentId, receiverId) {
   const receiver = await getReceiverForAgent(agentId, receiverId);
   if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
@@ -489,11 +406,6 @@ module.exports = {
   listReceivers,
   getReceiverForAgent,
   getReceiverStats,
-  listPending,
-  approveReceiver,
-  rejectReceiver,
-  requestChanges,
-  setReceiverStatus,
   getCredentials,
   listCredentialReceivers,
   submitForReview,

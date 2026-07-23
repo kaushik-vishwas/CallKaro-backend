@@ -51,10 +51,12 @@ function getTransporter() {
 
 async function sendOtpEmail({to, otp, purpose}) {
   const mailer = getTransporter();
-  const subject =
-    purpose === 'forgot-password'
-      ? 'Callkaro password reset OTP'
-      : 'Callkaro verification OTP';
+  const subjectByPurpose = {
+    'forgot-password': 'Callkaro password reset OTP',
+    'admin-reset': 'Callkaro admin password reset OTP',
+    'admin-login': 'Callkaro admin login verification OTP',
+  };
+  const subject = subjectByPurpose[purpose] || 'Callkaro verification OTP';
 
   const text = `Your Callkaro OTP is ${otp}. It expires in ${config.otpTtlMinutes} minutes. Do not share this code.`;
   const html = `

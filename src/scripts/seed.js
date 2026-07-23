@@ -1,8 +1,9 @@
 /**
- * Seed demo Caller + Agent (+ optional sample receivers).
+ * Seed demo Caller + Agent + Admin (+ optional sample receivers).
  *
  * Caller:  demo@callkaro.local / password123
  * Agent:   agent@callkaro.com / password123
+ * Admin:   admin@callkaro.com / password123
  */
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
@@ -12,6 +13,7 @@ const {connectMongo} = require('../db/connect');
 const Caller = require('../models/Caller');
 const Agent = require('../models/Agent');
 const Receiver = require('../models/Receiver');
+const {ensureDemoAdmin} = require('../bootstrap/ensureDemoAdmin');
 
 async function ensureCaller() {
   const email = 'demo@callkaro.local';
@@ -106,12 +108,11 @@ async function ensureSampleReceivers(agent) {
       age: 26,
       gender: 'female',
       level: 3,
-      status: 'active',
+      status: 'pending_review',
       totalHours: 198,
       earnings: 38230,
       totalCalls: 320,
-      activatedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-      submittedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+      submittedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
     },
     {
       id: 'RCV-SAMPLE3',
@@ -161,6 +162,7 @@ async function seed() {
   await connectMongo();
   await ensureCaller();
   const agent = await ensureAgent();
+  await ensureDemoAdmin();
   await ensureSampleReceivers(agent);
   process.exit(0);
 }

@@ -36,7 +36,7 @@ function registerModuleRoutes(app) {
   app.use('/api/calls', createStubRouter('calls'));
   app.use('/api/notifications', createStubRouter('notifications'));
   app.use('/api/uploads', require('./uploads/uploads.routes'));
-  app.use('/api/admin', createStubRouter('admin'));
+  app.use('/api/admin', require('./admin/admin.routes'));
 }
 
 module.exports = {registerModuleRoutes, createCallerCompatibilityRouter};

@@ -125,16 +125,6 @@ async function receiverStats(req, res) {
   }
 }
 
-async function listPending(req, res) {
-  try {
-    const pending = await agentService.listPending(req.auth.agentId);
-    return ok(res, {pending}, 'Pending approvals fetched');
-  } catch (error) {
-    console.error('[agent.listPending]', error);
-    return fail(res, 'Failed to list pending approvals.', 500);
-  }
-}
-
 async function getReceiver(req, res) {
   try {
     const receiver = await agentService.getReceiverForAgent(
@@ -150,104 +140,6 @@ async function getReceiver(req, res) {
   } catch (error) {
     console.error('[agent.getReceiver]', error);
     return fail(res, 'Failed to fetch receiver.', 500);
-  }
-}
-
-async function approveReceiver(req, res) {
-  try {
-    const result = await agentService.approveReceiver(
-      req.auth.agentId,
-      req.params.id,
-    );
-    if (!result.ok) return fail(res, result.message, result.status || 400);
-    return ok(
-      res,
-      {receiver: await agentService.publicReceiverProfile(result.receiver)},
-      'Receiver approved',
-    );
-  } catch (error) {
-    console.error('[agent.approveReceiver]', error);
-    return fail(res, 'Failed to approve receiver.', 500);
-  }
-}
-
-async function rejectReceiver(req, res) {
-  try {
-    const {reason} = req.body || {};
-    const result = await agentService.rejectReceiver(
-      req.auth.agentId,
-      req.params.id,
-      reason,
-    );
-    if (!result.ok) return fail(res, result.message, result.status || 400);
-    return ok(
-      res,
-      {receiver: await agentService.publicReceiverProfile(result.receiver)},
-      'Receiver rejected',
-    );
-  } catch (error) {
-    console.error('[agent.rejectReceiver]', error);
-    return fail(res, 'Failed to reject receiver.', 500);
-  }
-}
-
-async function requestChanges(req, res) {
-  try {
-    const {note} = req.body || {};
-    const result = await agentService.requestChanges(
-      req.auth.agentId,
-      req.params.id,
-      note,
-    );
-    if (!result.ok) return fail(res, result.message, result.status || 400);
-    return ok(
-      res,
-      {receiver: await agentService.publicReceiverProfile(result.receiver)},
-      'Changes requested',
-    );
-  } catch (error) {
-    console.error('[agent.requestChanges]', error);
-    return fail(res, 'Failed to request changes.', 500);
-  }
-}
-
-async function terminateReceiver(req, res) {
-  try {
-    const {reason} = req.body || {};
-    const result = await agentService.setReceiverStatus(
-      req.auth.agentId,
-      req.params.id,
-      'inactive',
-      reason,
-    );
-    if (!result.ok) return fail(res, result.message, result.status || 400);
-    return ok(
-      res,
-      {receiver: await agentService.publicReceiverProfile(result.receiver)},
-      'Receiver terminated',
-    );
-  } catch (error) {
-    console.error('[agent.terminateReceiver]', error);
-    return fail(res, 'Failed to terminate receiver.', 500);
-  }
-}
-
-async function activateReceiver(req, res) {
-  try {
-    const result = await agentService.setReceiverStatus(
-      req.auth.agentId,
-      req.params.id,
-      'active',
-    );
-    if (!result.ok) return fail(res, result.message, result.status || 400);
-    return ok(
-      res,
-      {receiver: await agentService.publicReceiverProfile(result.receiver)},
-      'Receiver activated',
-    );
-  } catch (error) {
-    console.error('[agent.activateReceiver]', error);
-    return fail(res, 'Failed to activate receiver.', 500);
   }
 }
 
@@ -304,13 +196,7 @@ module.exports = {
   createReceiver,
   listReceivers,
   receiverStats,
-  listPending,
   getReceiver,
-  approveReceiver,
-  rejectReceiver,
-  requestChanges,
-  terminateReceiver,
-  activateReceiver,
   getCredentials,
   listCredentials,
   submitForReview,

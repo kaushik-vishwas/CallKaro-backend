@@ -1,9 +1,11 @@
 const {createApp} = require('./app');
 const {config} = require('./config');
 const {connectMongo} = require('./db/connect');
+const {ensureDemoAdmin} = require('./bootstrap/ensureDemoAdmin');
 
 async function start() {
   await connectMongo();
+  await ensureDemoAdmin();
 
   const app = createApp();
   app.listen(config.port, config.host, () => {
