@@ -1,11 +1,16 @@
 const express = require('express');
 const {adminAuthRequired} = require('../../middleware/auth');
+const {ok} = require('../../utils/response');
 const adminController = require('../../controllers/admin.controller');
 const adminAgentsController = require('../../controllers/adminAgents.controller');
 const adminCallersController = require('../../controllers/adminCallers.controller');
 const adminReceiversController = require('../../controllers/adminReceivers.controller');
 
 const router = express.Router();
+
+router.get('/health', (_req, res) => {
+  return ok(res, {module: 'admin', ready: true}, 'Admin module ready');
+});
 
 router.post('/login', adminController.login);
 router.post('/verify-2fa', adminController.verify2fa);
