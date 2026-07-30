@@ -115,6 +115,16 @@ async function listReceivers(req, res) {
   }
 }
 
+async function listPendingApprovals(req, res) {
+  try {
+    const pending = await agentService.listPendingApprovals(req.auth.agentId);
+    return ok(res, {pending}, 'Pending approvals fetched');
+  } catch (error) {
+    console.error('[agent.listPendingApprovals]', error);
+    return fail(res, 'Failed to list pending approvals.', 500);
+  }
+}
+
 async function receiverStats(req, res) {
   try {
     const stats = await agentService.getReceiverStats(req.auth.agentId);
@@ -195,6 +205,7 @@ module.exports = {
   updatePassword,
   createReceiver,
   listReceivers,
+  listPendingApprovals,
   receiverStats,
   getReceiver,
   getCredentials,

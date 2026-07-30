@@ -254,9 +254,49 @@ async function claimDailyReward(req, res) {
     if (!result.ok) {
       return fail(res, result.message);
     }
-    return ok(res, result.data, 'Daily reward claimed successfully');
+    return ok(res, result.data, 'Daily check-in claimed successfully');
   } catch (error) {
     return fail(res, error.message || 'Failed to claim daily reward.');
+  }
+}
+
+async function claimWelcomeTalk(req, res) {
+  try {
+    const result = await callerService.claimWelcomeTalk(req.auth.userId);
+    if (!result.ok) {
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'Welcome free talk activated');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to claim welcome talk.');
+  }
+}
+
+async function consumeWelcomeTalk(req, res) {
+  try {
+    const minutesUsed = Number(req.body?.minutesUsed ?? 1);
+    const result = await callerService.consumeWelcomeTalk(
+      req.auth.userId,
+      minutesUsed,
+    );
+    if (!result.ok) {
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'Welcome talk minutes updated');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to consume welcome talk.');
+  }
+}
+
+async function rewardsStatus(req, res) {
+  try {
+    const status = await callerService.getRewardsStatus(req.auth.userId);
+    if (!status) {
+      return fail(res, 'Caller not found.', 404);
+    }
+    return ok(res, status, 'Rewards status fetched');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to fetch rewards status.');
   }
 }
 
@@ -291,6 +331,40 @@ async function verifyPayment(req, res) {
   }
 }
 
+async function discoverReceivers(req, res) {
+  try {
+    const receivers = await callerService.listDiscoverReceivers();
+    return ok(res, {receivers}, 'Discover profiles fetched successfully');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to fetch discover profiles.');
+  }
+}
+
+async function vipStatus(req, res) {
+  try {
+    const result = await callerService.getVipStatus(req.auth.userId);
+    if (!result.ok) {
+      return fail(res, result.message, 404);
+    }
+    return ok(res, result.data, 'VIP status fetched');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to fetch VIP status.');
+  }
+}
+
+async function activateVip(req, res) {
+  try {
+    const planId = String(req.body?.planId || '').toLowerCase();
+    const result = await callerService.activateVip(req.auth.userId, planId);
+    if (!result.ok) {
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'VIP activated successfully');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to activate VIP.');
+  }
+}
+
 module.exports = {
   signup,
   verifyOtp,
@@ -302,6 +376,12 @@ module.exports = {
   editProfile,
   dailyRewardStatus,
   claimDailyReward,
+  claimWelcomeTalk,
+  consumeWelcomeTalk,
+  rewardsStatus,
   createOrder,
   verifyPayment,
+  vipStatus,
+  activateVip,
+  discoverReceivers,
 };

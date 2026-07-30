@@ -16,6 +16,11 @@ router.get(
   agentAuthRequired,
   agentController.listCredentials,
 );
+router.get(
+  '/receivers/pending',
+  agentAuthRequired,
+  agentController.listPendingApprovals,
+);
 router.get('/receivers', agentAuthRequired, agentController.listReceivers);
 router.post('/receivers', agentAuthRequired, agentController.createReceiver);
 router.get('/receivers/:id', agentAuthRequired, agentController.getReceiver);

@@ -17,6 +17,38 @@ const config = {
   razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_local_key',
   razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || 'rzp_test_local_secret',
   coinsPer100Inr: Number(process.env.COINS_PER_100_INR || 2500),
+  /** Welcome free talk minutes (separate from wallet). */
+  welcomeFreeMinutes: Number(process.env.WELCOME_FREE_MINUTES || 5),
+  /** Daily check-in free coins (separate from wallet). 1600 coins = 1 min video. */
+  dailyCheckInCoins: Number(process.env.DAILY_CHECKIN_COINS || 1600),
+  dailyCheckInDays: Number(process.env.DAILY_CHECKIN_DAYS || 7),
+  rewardCoinsPerVideoMinute: Number(
+    process.env.REWARD_COINS_PER_VIDEO_MINUTE || 1600,
+  ),
+  /** VIP plans (INR). Weekly gets activation bonus wallet coins. */
+  vipPlans: {
+    weekly: {
+      id: 'weekly',
+      label: 'Weekly',
+      title: 'Weekly VIP',
+      priceInr: Number(process.env.VIP_WEEKLY_PRICE_INR || 149),
+      originalInr: Number(process.env.VIP_WEEKLY_ORIGINAL_INR || 149),
+      days: Number(process.env.VIP_WEEKLY_DAYS || 7),
+      bonusCoins: Number(process.env.VIP_WEEKLY_BONUS_COINS || 1000),
+      perDayLabel: '₹21/day · try it out',
+    },
+    monthly: {
+      id: 'monthly',
+      label: 'Monthly',
+      title: 'Monthly VIP',
+      priceInr: Number(process.env.VIP_MONTHLY_PRICE_INR || 399),
+      originalInr: Number(process.env.VIP_MONTHLY_ORIGINAL_INR || 596),
+      days: Number(process.env.VIP_MONTHLY_DAYS || 30),
+      bonusCoins: Number(process.env.VIP_MONTHLY_BONUS_COINS || 0),
+      perDayLabel: '₹13/day · best value',
+      saveBadge: 'SAVE 30%',
+    },
+  },
   // Used when generating receiver onboarding links for the agent panel
   onboardingBaseUrl:
     process.env.ONBOARDING_BASE_URL || 'http://localhost:5174',

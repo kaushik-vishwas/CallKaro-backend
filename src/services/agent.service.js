@@ -252,6 +252,16 @@ async function listReceivers(agentId, {status, q} = {}) {
   return receivers.map(publicReceiverListItem);
 }
 
+async function listPendingApprovals(agentId) {
+  const receivers = await Receiver.find({
+    agentId,
+    status: 'pending_review',
+  })
+    .sort({submittedAt: -1, updatedAt: -1})
+    .lean();
+  return receivers.map(publicPendingRow);
+}
+
 async function getReceiverForAgent(agentId, receiverId) {
   return Receiver.findOne({id: receiverId, agentId});
 }
@@ -404,6 +414,7 @@ module.exports = {
   updatePassword,
   createReceiver,
   listReceivers,
+  listPendingApprovals,
   getReceiverForAgent,
   getReceiverStats,
   getCredentials,
