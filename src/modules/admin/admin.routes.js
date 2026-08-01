@@ -5,6 +5,8 @@ const adminController = require('../../controllers/admin.controller');
 const adminAgentsController = require('../../controllers/adminAgents.controller');
 const adminCallersController = require('../../controllers/adminCallers.controller');
 const adminReceiversController = require('../../controllers/adminReceivers.controller');
+const adminTransactionsController = require('../../controllers/adminTransactions.controller');
+const adminReportsController = require('../../controllers/adminReports.controller');
 
 const router = express.Router();
 
@@ -76,6 +78,36 @@ router.post(
   '/receivers/:id/terminate',
   adminAuthRequired,
   adminReceiversController.terminateReceiver,
+);
+
+router.get(
+  '/transactions/stats',
+  adminAuthRequired,
+  adminTransactionsController.transactionStats,
+);
+router.get(
+  '/transactions',
+  adminAuthRequired,
+  adminTransactionsController.listTransactions,
+);
+router.get(
+  '/transactions/:id',
+  adminAuthRequired,
+  adminTransactionsController.getTransaction,
+);
+
+router.get('/reports/stats', adminAuthRequired, adminReportsController.reportStats);
+router.get('/reports', adminAuthRequired, adminReportsController.listReports);
+router.get('/reports/:id', adminAuthRequired, adminReportsController.getReport);
+router.post(
+  '/reports/:id/ignore',
+  adminAuthRequired,
+  adminReportsController.ignoreReport,
+);
+router.post(
+  '/reports/:id/terminate',
+  adminAuthRequired,
+  adminReportsController.terminateReport,
 );
 
 module.exports = router;

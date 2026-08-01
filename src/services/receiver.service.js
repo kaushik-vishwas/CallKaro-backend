@@ -1,5 +1,7 @@
 const Receiver = require('../models/Receiver');
 const storageService = require('./storage.service');
+const bcrypt = require('bcryptjs');
+const {vipProgress} = require('./leaderboard.service');
 
 function genderLabel(gender) {
   if (!gender) return '';
@@ -265,10 +267,311 @@ async function retryOnboarding(token) {
   return {ok: true, receiver};
 }
 
+function needsPasswordChange(receiver) {
+  if (typeof receiver.mustChangePassword === 'boolean') {
+    return receiver.mustChangePassword;
+  }
+  return Boolean(receiver.temporaryPassword);
+}
+
+/** Hours needed to complete the current level band (matches product UI). */
+const LEVEL_HOUR_TARGETS = {
+  1: 48,
+  2: 168,
+  3: 400,
+};
+
+function levelProgress(receiver) {
+  const level = Number(receiver.level) || 1;
+  const hoursDone = Math.max(0, Number(receiver.totalHours) || 0);
+  const hoursTarget = LEVEL_HOUR_TARGETS[level] || LEVEL_HOUR_TARGETS[2];
+  const levelProgressPct = Math.min(
+    100,
+    Math.round((hoursDone / Math.max(hoursTarget, 1)) * 100),
+  );
+  return {hoursDone, hoursTarget, levelProgressPct};
+}
+
+function buildBadges(receiver) {
+  const level = Number(receiver.level) || 1;
+  const followers = Math.max(0, Number(receiver.followers) || 0);
+  const badges = [];
+  if (level >= 2) {
+    badges.push({id: 'expert', label: 'Expert', tone: 'expert'});
+  }
+  if (level >= 3 || Number(receiver.totalCalls) >= 100) {
+    badges.push({id: 'top', label: 'Top 1%', tone: 'top'});
+  }
+  badges.push({
+    id: 'followers',
+    label: `${followers.toLocaleString('en-IN')} Followers`,
+    tone: 'followers',
+  });
+  return badges;
+}
+
+function publicReceiverAuth(receiver) {
+  const photos = Array.isArray(receiver.photos) ? receiver.photos : [];
+  return {
+    id: receiver.id,
+    name: receiver.name,
+    email: receiver.loginEmail || '',
+    age: receiver.age,
+    gender: genderLabel(receiver.gender),
+    level: receiver.level,
+    status: receiver.status,
+    avatarUrl: photos[0] || '',
+    mustChangePassword: needsPasswordChange(receiver),
+  };
+}
+
+/** Full authenticated profile for receiver app (Profile + Edit Profile). */
+async function publicReceiverAppProfile(receiver) {
+  const rawPhotos = Array.isArray(receiver.photos) ? receiver.photos : [];
+  const photos = await storageService.mapAccessUrls(rawPhotos);
+  const progress = levelProgress(receiver);
+  const followers = Math.max(0, Number(receiver.followers) || 0);
+  const walletBalance = Math.max(0, Number(receiver.walletBalance) || 0);
+  const pendingEarnings = Math.max(0, Number(receiver.pendingEarnings) || 0);
+  const totalEarned = Math.max(
+    0,
+    Number(receiver.earnings) || walletBalance + pendingEarnings,
+  );
+
+  return {
+    ...publicReceiverAuth(receiver),
+    avatarUrl: photos[0] || '',
+    bio: receiver.bio || '',
+    languages: Array.isArray(receiver.languages) ? receiver.languages : [],
+    photos,
+    walletBalance,
+    pendingEarnings,
+    totalEarned,
+    totalHours: progress.hoursDone,
+    hoursDone: progress.hoursDone,
+    hoursTarget: progress.hoursTarget,
+    levelProgressPct: progress.levelProgressPct,
+    totalCalls: Number(receiver.totalCalls) || 0,
+    profileViews: Math.max(0, Number(receiver.profileViews) || 0),
+    followers,
+    isOnline: Boolean(receiver.isOnline),
+    badges: buildBadges(receiver),
+    vipProgress: vipProgress(receiver),
+  };
+}
+
+async function updateProfile(receiverId, payload = {}) {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  if (typeof payload.bio === 'string') {
+    const bio = payload.bio.trim();
+    if (bio.length > 250) {
+      return {ok: false, message: 'Bio must be 250 characters or less.'};
+    }
+    receiver.bio = bio;
+  }
+
+  if (Array.isArray(payload.languages)) {
+    const languages = payload.languages
+      .map(lang => String(lang || '').trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    if (!languages.length) {
+      return {ok: false, message: 'Select at least one language.'};
+    }
+    receiver.languages = languages;
+  }
+
+  if (Array.isArray(payload.photos)) {
+    const photos = normalizePhotos(payload.photos);
+    if (photos.length < 3) {
+      return {ok: false, message: 'Upload at least 3 profile photos.'};
+    }
+    if (photos.length > 5) {
+      return {ok: false, message: 'You can upload a maximum of 5 photos.'};
+    }
+    receiver.photos = photos;
+  }
+
+  await receiver.save();
+  return {ok: true, receiver};
+}
+
+async function setOnlineStatus(receiverId, isOnline) {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  if (receiver.status !== 'active') {
+    return {
+      ok: false,
+      message: 'Only active receivers can go online.',
+      status: 400,
+    };
+  }
+  receiver.isOnline = Boolean(isOnline);
+  await receiver.save();
+  if (receiver.isOnline) {
+    const notificationService = require('./notification.service');
+    notificationService
+      .notifyFollowersReceiverOnline(receiver)
+      .catch(err =>
+        console.error('[receiver.online.notify]', err.message || err),
+      );
+  }
+  return {ok: true, receiver};
+}
+
+async function findByLoginEmail(email) {
+  return Receiver.findOne({loginEmail: String(email || '').toLowerCase().trim()});
+}
+
+async function findById(id) {
+  return Receiver.findOne({id});
+}
+
+async function login(email, password) {
+  const receiver = await findByLoginEmail(email);
+  if (!receiver || !receiver.passwordHash) {
+    return {ok: false, message: 'Invalid email or password.'};
+  }
+
+  const match = await bcrypt.compare(String(password || ''), receiver.passwordHash);
+  if (!match) {
+    return {ok: false, message: 'Invalid email or password.'};
+  }
+
+  return {ok: true, receiver};
+}
+
+async function updatePassword(receiverId, newPassword, currentPassword) {
+  if (!newPassword || String(newPassword).length < 8) {
+    return {ok: false, message: 'Password must be at least 8 characters.'};
+  }
+
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+
+  const requiresCurrent =
+    !needsPasswordChange(receiver) && Boolean(receiver.passwordHash);
+  if (requiresCurrent) {
+    if (!currentPassword) {
+      return {ok: false, message: 'Current password is required.'};
+    }
+    const match = await bcrypt.compare(
+      String(currentPassword),
+      receiver.passwordHash,
+    );
+    if (!match) {
+      return {ok: false, message: 'Current password is incorrect.'};
+    }
+  }
+
+  receiver.passwordHash = await bcrypt.hash(String(newPassword), 10);
+  receiver.temporaryPassword = '';
+  receiver.mustChangePassword = false;
+  await receiver.save();
+  return {ok: true, receiver};
+}
+
+function defaultNotificationPreferences() {
+  return {
+    incomingCallAlerts: true,
+    callReminderAlerts: false,
+    withdrawalUpdates: true,
+    earningsUpdates: true,
+    paymentNotifications: true,
+  };
+}
+
+function publicNotificationPreferences(receiver) {
+  const prefs = receiver.notificationPreferences || {};
+  const defaults = defaultNotificationPreferences();
+  return {
+    incomingCallAlerts:
+      typeof prefs.incomingCallAlerts === 'boolean'
+        ? prefs.incomingCallAlerts
+        : defaults.incomingCallAlerts,
+    callReminderAlerts:
+      typeof prefs.callReminderAlerts === 'boolean'
+        ? prefs.callReminderAlerts
+        : defaults.callReminderAlerts,
+    withdrawalUpdates:
+      typeof prefs.withdrawalUpdates === 'boolean'
+        ? prefs.withdrawalUpdates
+        : defaults.withdrawalUpdates,
+    earningsUpdates:
+      typeof prefs.earningsUpdates === 'boolean'
+        ? prefs.earningsUpdates
+        : defaults.earningsUpdates,
+    paymentNotifications:
+      typeof prefs.paymentNotifications === 'boolean'
+        ? prefs.paymentNotifications
+        : defaults.paymentNotifications,
+  };
+}
+
+async function getNotificationPreferences(receiverId) {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  return {ok: true, preferences: publicNotificationPreferences(receiver)};
+}
+
+async function updateNotificationPreferences(receiverId, payload = {}) {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+
+  const current = publicNotificationPreferences(receiver);
+  const next = {...current};
+  for (const key of Object.keys(defaultNotificationPreferences())) {
+    if (typeof payload[key] === 'boolean') {
+      next[key] = payload[key];
+    }
+  }
+  receiver.notificationPreferences = next;
+  await receiver.save();
+  return {ok: true, preferences: next};
+}
+
+async function requestAccountDeletion(receiverId, reason = '') {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  const trimmed = String(reason || '').trim();
+  if (!trimmed) {
+    return {ok: false, message: 'Please select a reason for deletion.'};
+  }
+  receiver.deletionRequestedAt = new Date();
+  receiver.deletionReason = trimmed.slice(0, 200);
+  receiver.isOnline = false;
+  await receiver.save();
+  return {ok: true, receiver};
+}
+
 module.exports = {
   publicOnboardingReceiver,
+  publicReceiverAuth,
+  publicReceiverAppProfile,
   getOnboarding,
   saveOnboarding,
   submitOnboarding,
   retryOnboarding,
+  findByLoginEmail,
+  findById,
+  login,
+  updatePassword,
+  updateProfile,
+  setOnlineStatus,
+  getNotificationPreferences,
+  updateNotificationPreferences,
+  requestAccountDeletion,
 };

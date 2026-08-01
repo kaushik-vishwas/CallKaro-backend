@@ -16,6 +16,10 @@ const config = {
   emailAppPassword: (process.env.EMAIL_APP_PASSWORD || '').replace(/\s+/g, ''),
   razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_local_key',
   razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || 'rzp_test_local_secret',
+  /** Dev-only: allow fake Expo Go signatures. Keep false with real Razorpay keys. */
+  razorpayAllowTestBypass:
+    String(process.env.RAZORPAY_ALLOW_TEST_BYPASS || '').toLowerCase() ===
+    'true',
   coinsPer100Inr: Number(process.env.COINS_PER_100_INR || 2500),
   /** Welcome free talk minutes (separate from wallet). */
   welcomeFreeMinutes: Number(process.env.WELCOME_FREE_MINUTES || 5),

@@ -323,20 +323,150 @@ async function verifyPayment(req, res) {
       req.body || {},
     );
     if (!result.ok) {
+      const notificationService = require('../services/notification.service');
+      notificationService
+        .createForCaller({
+          callerId: req.auth.userId,
+          type: 'recharge_failed',
+          title: 'Recharge failed',
+          body: result.message || 'Your coin recharge could not be completed.',
+        })
+        .catch(() => undefined);
       return fail(res, result.message);
     }
     return ok(res, result.data, 'Payment verified successfully');
   } catch (error) {
+    const notificationService = require('../services/notification.service');
+    notificationService
+      .createForCaller({
+        callerId: req.auth.userId,
+        type: 'recharge_failed',
+        title: 'Recharge failed',
+        body: error.message || 'Your coin recharge could not be completed.',
+      })
+      .catch(() => undefined);
     return fail(res, error.message || 'Payment verification failed.');
   }
 }
 
 async function discoverReceivers(req, res) {
   try {
-    const receivers = await callerService.listDiscoverReceivers();
+    const receivers = await callerService.listDiscoverReceivers(req.auth.userId);
     return ok(res, {receivers}, 'Discover profiles fetched successfully');
   } catch (error) {
     return fail(res, error.message || 'Failed to fetch discover profiles.');
+  }
+}
+
+async function followReceiver(req, res) {
+  try {
+    const followService = require('../services/follow.service');
+    const receiverId = String(req.params.receiverId || '').trim();
+    if (!receiverId) {
+      return fail(res, 'Receiver id is required.');
+    }
+    const data = await followService.followReceiver(
+      req.auth.userId,
+      receiverId,
+    );
+    return ok(res, data, 'Followed successfully');
+  } catch (error) {
+    console.error('[caller.followReceiver]', error);
+    return fail(
+      res,
+      error.message || 'Failed to follow receiver.',
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function unfollowReceiver(req, res) {
+  try {
+    const followService = require('../services/follow.service');
+    const receiverId = String(req.params.receiverId || '').trim();
+    if (!receiverId) {
+      return fail(res, 'Receiver id is required.');
+    }
+    const data = await followService.unfollowReceiver(
+      req.auth.userId,
+      receiverId,
+    );
+    return ok(res, data, 'Unfollowed successfully');
+  } catch (error) {
+    console.error('[caller.unfollowReceiver]', error);
+    return fail(
+      res,
+      error.message || 'Failed to unfollow receiver.',
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function recordReceiverProfileView(req, res) {
+  try {
+    const followService = require('../services/follow.service');
+    const receiverId = String(req.params.receiverId || '').trim();
+    if (!receiverId) {
+      return fail(res, 'Receiver id is required.');
+    }
+    const data = await followService.recordProfileView(
+      req.auth.userId,
+      receiverId,
+    );
+    return ok(res, data, 'Profile view recorded');
+  } catch (error) {
+    console.error('[caller.recordReceiverProfileView]', error);
+    return fail(
+      res,
+      error.message || 'Failed to record profile view.',
+      error.statusCode || 500,
+    );
+  }
+}
+
+async function createVipOrder(req, res) {
+  try {
+    const planId = String(req.body?.planId || '').toLowerCase();
+    const result = await callerService.createVipOrder(req.auth.userId, planId);
+    if (!result.ok) {
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'VIP order created successfully', 201);
+  } catch (error) {
+    return fail(res, error.message || 'Failed to create VIP order.');
+  }
+}
+
+async function verifyVipPayment(req, res) {
+  try {
+    const result = await callerService.verifyVipPayment(
+      req.auth.userId,
+      req.body || {},
+    );
+    if (!result.ok) {
+      const notificationService = require('../services/notification.service');
+      notificationService
+        .createForCaller({
+          callerId: req.auth.userId,
+          type: 'vip_failed',
+          title: 'VIP purchase failed',
+          body: result.message || 'We could not activate your VIP plan.',
+        })
+        .catch(() => undefined);
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'VIP payment verified successfully');
+  } catch (error) {
+    const notificationService = require('../services/notification.service');
+    notificationService
+      .createForCaller({
+        callerId: req.auth.userId,
+        type: 'vip_failed',
+        title: 'VIP purchase failed',
+        body: error.message || 'We could not activate your VIP plan.',
+      })
+      .catch(() => undefined);
+    return fail(res, error.message || 'VIP payment verification failed.');
   }
 }
 
@@ -357,10 +487,29 @@ async function activateVip(req, res) {
     const planId = String(req.body?.planId || '').toLowerCase();
     const result = await callerService.activateVip(req.auth.userId, planId);
     if (!result.ok) {
+      const notificationService = require('../services/notification.service');
+      notificationService
+        .createForCaller({
+          callerId: req.auth.userId,
+          type: 'vip_failed',
+          title: 'VIP purchase failed',
+          body: result.message || 'We could not activate your VIP plan.',
+          data: {planId},
+        })
+        .catch(() => undefined);
       return fail(res, result.message);
     }
     return ok(res, result.data, 'VIP activated successfully');
   } catch (error) {
+    const notificationService = require('../services/notification.service');
+    notificationService
+      .createForCaller({
+        callerId: req.auth.userId,
+        type: 'vip_failed',
+        title: 'VIP purchase failed',
+        body: error.message || 'We could not activate your VIP plan.',
+      })
+      .catch(() => undefined);
     return fail(res, error.message || 'Failed to activate VIP.');
   }
 }
@@ -381,7 +530,12 @@ module.exports = {
   rewardsStatus,
   createOrder,
   verifyPayment,
+  createVipOrder,
+  verifyVipPayment,
   vipStatus,
   activateVip,
   discoverReceivers,
+  followReceiver,
+  unfollowReceiver,
+  recordReceiverProfileView,
 };

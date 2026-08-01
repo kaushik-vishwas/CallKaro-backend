@@ -4,7 +4,6 @@ const profileRoutes = require('./profile/profile.routes');
 const walletRoutes = require('./wallet/wallet.routes');
 const agentRoutes = require('./agent/agent.routes');
 const receiverRoutes = require('./receiver/receiver.routes');
-const {createStubRouter} = require('./createStubRouter');
 
 /**
  * Compatibility router — same paths the mobile app already uses (/api/caller/*).
@@ -27,14 +26,14 @@ function registerModuleRoutes(app) {
   // Agent panel
   app.use('/api/agent', agentRoutes);
 
-  // Future-facing module mounts (stubs until built)
+  // Future-facing module mounts
   app.use('/api/auth', authRoutes);
   app.use('/api/profile', profileRoutes);
   app.use('/api/wallet', walletRoutes);
   app.use('/api/receiver', receiverRoutes);
-  app.use('/api/chat', createStubRouter('chat'));
-  app.use('/api/calls', createStubRouter('calls'));
-  app.use('/api/notifications', createStubRouter('notifications'));
+  app.use('/api/chat', require('./chat/chat.routes'));
+  app.use('/api/calls', require('./calls/calls.routes'));
+  app.use('/api/notifications', require('./notifications/notifications.routes'));
   app.use('/api/uploads', require('./uploads/uploads.routes'));
   app.use('/api/admin', require('./admin/admin.routes'));
 }

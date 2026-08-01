@@ -41,6 +41,9 @@ const callerSchema = new mongoose.Schema(
     /** VIP membership — active while vipExpiresAt is in the future. */
     vipPlan: {type: String, default: null},
     vipExpiresAt: {type: Date, default: null},
+
+    /** Admin moderation — blocked callers cannot login or chat. */
+    isBlocked: {type: Boolean, default: false, index: true},
   },
   {timestamps: true, collection: 'callers'},
 );

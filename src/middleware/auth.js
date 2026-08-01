@@ -59,6 +59,30 @@ function agentAuthRequired(req, res, next) {
   }
 }
 
+function receiverAuthRequired(req, res, next) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+
+  if (scheme !== 'Bearer' || !token) {
+    return fail(res, 'Unauthorized. Token required.', 401);
+  }
+
+  try {
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.role !== 'receiver') {
+      return fail(res, 'Receiver access required.', 403);
+    }
+    req.auth = {
+      receiverId: payload.sub,
+      email: payload.email,
+      role: 'receiver',
+    };
+    return next();
+  } catch {
+    return fail(res, 'Invalid or expired token.', 401);
+  }
+}
+
 function adminAuthRequired(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
@@ -108,6 +132,7 @@ module.exports = {
   signToken,
   authRequired,
   agentAuthRequired,
+  receiverAuthRequired,
   adminAuthRequired,
   signChallengeToken,
   verifyChallengeToken,

@@ -12,6 +12,8 @@ router.get('/rewards-status', authRequired, callerController.rewardsStatus);
 router.post('/recharge/create-order', authRequired, callerController.createOrder);
 router.post('/recharge/verify-payment', authRequired, callerController.verifyPayment);
 router.get('/vip-status', authRequired, callerController.vipStatus);
+router.post('/vip/create-order', authRequired, callerController.createVipOrder);
+router.post('/vip/verify-payment', authRequired, callerController.verifyVipPayment);
 router.post('/vip/activate', authRequired, callerController.activateVip);
 
 module.exports = router;

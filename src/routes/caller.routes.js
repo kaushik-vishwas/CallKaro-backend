@@ -23,14 +23,31 @@ router.post('/claim-welcome-talk', authRequired, callerController.claimWelcomeTa
 router.post('/consume-welcome-talk', authRequired, callerController.consumeWelcomeTalk);
 router.get('/rewards-status', authRequired, callerController.rewardsStatus);
 
-// Recharge / Razorpay test mode (token required)
+// Recharge / Razorpay (token required)
 router.post('/recharge/create-order', authRequired, callerController.createOrder);
 router.post('/recharge/verify-payment', authRequired, callerController.verifyPayment);
 
-// Discover feed — only admin-approved (active) receivers
+// VIP + Razorpay
 router.get('/vip-status', authRequired, callerController.vipStatus);
+router.post('/vip/create-order', authRequired, callerController.createVipOrder);
+router.post('/vip/verify-payment', authRequired, callerController.verifyVipPayment);
 router.post('/vip/activate', authRequired, callerController.activateVip);
 
 router.get('/discover', authRequired, callerController.discoverReceivers);
+router.post(
+  '/receivers/:receiverId/follow',
+  authRequired,
+  callerController.followReceiver,
+);
+router.delete(
+  '/receivers/:receiverId/follow',
+  authRequired,
+  callerController.unfollowReceiver,
+);
+router.post(
+  '/receivers/:receiverId/view',
+  authRequired,
+  callerController.recordReceiverProfileView,
+);
 
 module.exports = router;

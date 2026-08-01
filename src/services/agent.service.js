@@ -219,6 +219,7 @@ async function createReceiver(agentId, {name, age, gender, level, asDraft = fals
     loginEmail,
     temporaryPassword,
     passwordHash,
+    mustChangePassword: true,
   });
 
   return {

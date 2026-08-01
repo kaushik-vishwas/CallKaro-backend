@@ -63,6 +63,8 @@ const receiverSchema = new mongoose.Schema(
     loginEmail: {type: String, lowercase: true, trim: true, default: ''},
     temporaryPassword: {type: String, default: ''},
     passwordHash: {type: String, default: ''},
+    /** True until receiver sets their own password in the app. */
+    mustChangePassword: {type: Boolean, default: true},
     bio: {type: String, default: ''},
     languages: {type: [String], default: []},
     photos: {type: [String], default: []},
@@ -70,7 +72,25 @@ const receiverSchema = new mongoose.Schema(
     kyc: {type: kycSchema, default: () => ({})},
     totalHours: {type: Number, default: 0},
     earnings: {type: Number, default: 0},
+    /** Available wallet balance (INR). */
+    walletBalance: {type: Number, default: 0},
+    /** Earnings awaiting clearance (INR). */
+    pendingEarnings: {type: Number, default: 0},
     totalCalls: {type: Number, default: 0},
+    profileViews: {type: Number, default: 0},
+    followers: {type: Number, default: 0},
+    isOnline: {type: Boolean, default: false},
+    /** Last known leaderboard rank (for "moved up" UI). */
+    previousRank: {type: Number, default: null},
+    notificationPreferences: {
+      incomingCallAlerts: {type: Boolean, default: true},
+      callReminderAlerts: {type: Boolean, default: false},
+      withdrawalUpdates: {type: Boolean, default: true},
+      earningsUpdates: {type: Boolean, default: true},
+      paymentNotifications: {type: Boolean, default: true},
+    },
+    deletionRequestedAt: {type: Date, default: null},
+    deletionReason: {type: String, default: ''},
     submittedAt: {type: Date, default: null},
     activatedAt: {type: Date, default: null},
     rejectionReason: {type: String, default: ''},

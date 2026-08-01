@@ -167,6 +167,21 @@ async function activateVip(userId, planId) {
   await caller.save();
 
   const vip = getVipSnapshot(caller);
+  const notificationService = require('./notification.service');
+  notificationService
+    .createForCaller({
+      callerId: userId,
+      type: 'vip_success',
+      title: 'VIP activated',
+      body: `${plan.title} is active until ${expiresAt.toISOString().slice(0, 10)}.`,
+      data: {
+        planId: plan.id,
+        expiresAt: expiresAt.toISOString(),
+        bonusCoins,
+      },
+    })
+    .catch(() => undefined);
+
   return {
     ok: true,
     data: {
@@ -298,6 +313,12 @@ async function validateLogin(email, password) {
   const caller = await findUserByEmail(email);
   if (!caller || !caller.isVerified) {
     return {ok: false, message: 'Invalid email or password.'};
+  }
+  if (caller.isBlocked) {
+    return {
+      ok: false,
+      message: 'Your account has been blocked. Contact support.',
+    };
   }
   const match = await bcrypt.compare(password, caller.passwordHash);
   if (!match) {
@@ -434,6 +455,21 @@ async function claimDailyReward(userId) {
     {upsert: true, new: true, setDefaultsOnInsert: true},
   );
 
+  const notificationService = require('./notification.service');
+  notificationService
+    .createForCaller({
+      callerId: userId,
+      type: 'daily_checkin',
+      title: 'Daily check-in claimed',
+      body: `${amount.toLocaleString('en-IN')} reward coins added for today.`,
+      data: {
+        rewardedCoins: amount,
+        dayIndex,
+        streak,
+      },
+    })
+    .catch(() => undefined);
+
   return {
     ok: true,
     data: {
@@ -522,6 +558,26 @@ async function consumeWelcomeTalk(userId, minutesUsed = 1) {
   caller.welcomeTalkMinutes = after;
   await caller.save();
 
+  if (after <= 0 && before > 0) {
+    const notificationService = require('./notification.service');
+    notificationService
+      .createForCaller({
+        callerId: userId,
+        type: 'out_of_coins',
+        title: 'Out of free minutes',
+        body:
+          Number(caller.coins || 0) > 0
+            ? 'Free talk minutes are over. Calls will use wallet coins.'
+            : 'You are out of free minutes and coins. Recharge to keep talking.',
+        data: {
+          walletCoins: caller.coins || 0,
+          welcomeTalkMinutes: after,
+        },
+        dedupeMinutes: 10,
+      })
+      .catch(() => undefined);
+  }
+
   return {
     ok: true,
     data: {
@@ -556,6 +612,28 @@ function coinsForAmount(amountInr) {
   return Math.round((amountInr / 100) * config.coinsPer100Inr);
 }
 
+function verifyRazorpaySignature(orderId, paymentId, signature) {
+  const expected = crypto
+    .createHmac('sha256', config.razorpayKeySecret)
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+
+  if (signature === expected) {
+    return true;
+  }
+
+  // Optional local Expo Go bypass — disabled when using real keys (default).
+  if (
+    config.razorpayAllowTestBypass &&
+    (String(signature || '').startsWith('test_') ||
+      String(paymentId || '').startsWith('pay_test_'))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 async function createRechargeOrder(userId, amount) {
   if (!isAllowedRechargeAmount(amount)) {
     return {
@@ -564,13 +642,34 @@ async function createRechargeOrder(userId, amount) {
     };
   }
 
-  const orderId = `order_${crypto.randomBytes(8).toString('hex')}`;
   const amountPaise = amount * 100;
   const coins = coinsForAmount(amount);
+  const {createRazorpayOrder} = require('./razorpay.service');
+
+  let rzpOrder;
+  try {
+    rzpOrder = await createRazorpayOrder({
+      amountPaise,
+      currency: 'INR',
+      receipt: `rcg_${String(userId).slice(-6)}_${Date.now()}`.slice(0, 40),
+      notes: {
+        userId: String(userId),
+        purpose: 'recharge',
+        coins: String(coins),
+      },
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      message: error.message || 'Failed to create Razorpay order.',
+    };
+  }
 
   await Order.create({
-    id: orderId,
+    id: rzpOrder.id,
     userId,
+    purpose: 'recharge',
+    planId: null,
     amount,
     amountPaise,
     coins,
@@ -581,12 +680,87 @@ async function createRechargeOrder(userId, amount) {
   return {
     ok: true,
     data: {
-      orderId,
+      orderId: rzpOrder.id,
       amount,
       amountPaise,
       currency: 'INR',
       coins,
+      purpose: 'recharge',
       razorpayKeyId: config.razorpayKeyId,
+    },
+  };
+}
+
+async function createVipOrder(userId, planId) {
+  const plan = config.vipPlans[planId];
+  if (!plan) {
+    return {ok: false, message: 'Invalid VIP plan. Use weekly or monthly.'};
+  }
+
+  const amount = Number(plan.priceInr);
+  const amountPaise = amount * 100;
+  const {createRazorpayOrder} = require('./razorpay.service');
+
+  let rzpOrder;
+  try {
+    rzpOrder = await createRazorpayOrder({
+      amountPaise,
+      currency: 'INR',
+      receipt: `vip_${plan.id}_${Date.now()}`.slice(0, 40),
+      notes: {
+        userId: String(userId),
+        purpose: 'vip',
+        planId: plan.id,
+      },
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      message: error.message || 'Failed to create Razorpay VIP order.',
+    };
+  }
+
+  await Order.create({
+    id: rzpOrder.id,
+    userId,
+    purpose: 'vip',
+    planId: plan.id,
+    amount,
+    amountPaise,
+    coins: Number(plan.bonusCoins || 0),
+    currency: 'INR',
+    status: 'created',
+  });
+
+  return {
+    ok: true,
+    data: {
+      orderId: rzpOrder.id,
+      amount,
+      amountPaise,
+      currency: 'INR',
+      coins: Number(plan.bonusCoins || 0),
+      purpose: 'vip',
+      planId: plan.id,
+      planTitle: plan.title,
+      razorpayKeyId: config.razorpayKeyId,
+    },
+  };
+}
+
+async function fulfillVipFromOrder(userId, order) {
+  const planId = order.planId;
+  const result = await activateVip(userId, planId);
+  if (!result.ok) {
+    return result;
+  }
+  return {
+    ok: true,
+    data: {
+      ...result.data,
+      orderId: order.id,
+      paymentId: order.razorpayPaymentId,
+      purpose: 'vip',
     },
   };
 }
@@ -606,26 +780,35 @@ async function verifyRechargePayment(userId, payload) {
     return {ok: false, message: 'Order not found.'};
   }
   if (order.status === 'paid') {
-    return {ok: false, message: 'Payment already verified.'};
+    if (order.purpose === 'vip') {
+      const vip = getVipSnapshot(await findUserById(userId));
+      return {
+        ok: true,
+        data: {
+          orderId: razorpayOrderId,
+          paymentId: razorpayPaymentId,
+          purpose: 'vip',
+          ...vip,
+          message: 'Payment already verified.',
+        },
+      };
+    }
+    const callerPaid = await findUserById(userId);
+    return {
+      ok: true,
+      data: {
+        orderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        purpose: 'recharge',
+        coinsAdded: 0,
+        coins: callerPaid?.coins || 0,
+        message: 'Payment already verified.',
+      },
+    };
   }
 
-  const expected = crypto
-    .createHmac('sha256', config.razorpayKeySecret)
-    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-    .digest('hex');
-
-  const valid =
-    razorpaySignature === expected ||
-    razorpaySignature.startsWith('test_') ||
-    config.razorpayKeyId.includes('test');
-
-  if (!valid) {
+  if (!verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature)) {
     return {ok: false, message: 'Invalid payment signature.'};
-  }
-
-  const caller = await findUserById(userId);
-  if (!caller) {
-    return {ok: false, message: 'Caller not found.'};
   }
 
   order.status = 'paid';
@@ -634,14 +817,39 @@ async function verifyRechargePayment(userId, payload) {
   order.paidAt = new Date();
   await order.save();
 
+  if (order.purpose === 'vip') {
+    return fulfillVipFromOrder(userId, order);
+  }
+
+  const caller = await findUserById(userId);
+  if (!caller) {
+    return {ok: false, message: 'Caller not found.'};
+  }
+
   caller.coins = (caller.coins || 0) + order.coins;
   await caller.save();
+
+  const notificationService = require('./notification.service');
+  notificationService
+    .createForCaller({
+      callerId: userId,
+      type: 'recharge_success',
+      title: 'Recharge successful',
+      body: `${order.coins.toLocaleString('en-IN')} coins added to your wallet.`,
+      data: {
+        orderId: razorpayOrderId,
+        coinsAdded: order.coins,
+        coins: caller.coins,
+      },
+    })
+    .catch(() => undefined);
 
   return {
     ok: true,
     data: {
       orderId: razorpayOrderId,
       paymentId: razorpayPaymentId,
+      purpose: 'recharge',
       coinsAdded: order.coins,
       coins: caller.coins,
       message: 'Payment verified successfully',
@@ -649,8 +857,21 @@ async function verifyRechargePayment(userId, payload) {
   };
 }
 
+async function verifyVipPayment(userId, payload) {
+  const result = await verifyRechargePayment(userId, payload);
+  if (!result.ok) {
+    return result;
+  }
+  if (result.data?.purpose && result.data.purpose !== 'vip') {
+    return {ok: false, message: 'This order is not a VIP purchase.'};
+  }
+  return result;
+}
+
 function derivePresence(receiver) {
   if (receiver.status !== 'active') return 'offline';
+  if (receiver.isOnline === true) return 'online';
+  if (receiver.isOnline === false) return 'offline';
   const updated = receiver.updatedAt ? new Date(receiver.updatedAt).getTime() : 0;
   if (Date.now() - updated <= 2 * 60 * 60 * 1000) return 'online';
   return 'offline';
@@ -662,13 +883,19 @@ function coinRatesForLevel(level) {
   return {coinRate: 5, vipCoinRate: 3};
 }
 
-async function listDiscoverReceivers() {
+async function listDiscoverReceivers(callerId) {
   const receivers = await Receiver.find({status: 'active'})
     .sort({activatedAt: -1, updatedAt: -1})
     .select(
-      'id name age gender level status bio languages photos earnings totalCalls updatedAt activatedAt',
+      'id name age gender level status bio languages photos earnings totalCalls followers profileViews isOnline updatedAt activatedAt',
     )
     .lean();
+
+  const followService = require('./follow.service');
+  const followingIds = await followService.getFollowingReceiverIds(
+    callerId,
+    receivers.map(r => r.id),
+  );
 
   const mapped = await Promise.all(
     receivers.map(async receiver => {
@@ -693,7 +920,9 @@ async function listDiscoverReceivers() {
         languages,
         bio: receiver.bio || '',
         level: receiver.level,
-        followers: Math.max(0, Number(receiver.totalCalls) || 0),
+        followers: Math.max(0, Number(receiver.followers) || 0),
+        profileViews: Math.max(0, Number(receiver.profileViews) || 0),
+        isFollowing: followingIds.has(receiver.id),
         ...rates,
       };
     }),
@@ -720,7 +949,9 @@ module.exports = {
   consumeWelcomeTalk,
   getRewardsStatus,
   createRechargeOrder,
+  createVipOrder,
   verifyRechargePayment,
+  verifyVipPayment,
   getVipStatus,
   activateVip,
   listDiscoverReceivers,
