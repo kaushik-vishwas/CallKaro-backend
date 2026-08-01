@@ -29,6 +29,33 @@ const config = {
   rewardCoinsPerVideoMinute: Number(
     process.env.REWARD_COINS_PER_VIDEO_MINUTE || 1600,
   ),
+  /**
+   * Receiver share units per video minute (internal).
+   * Converted to INR via coinsPer100Inr — never shown as coins in receiver UI.
+   */
+  receiverCoinsPerVideoMinute: Number(
+    process.env.RECEIVER_COINS_PER_VIDEO_MINUTE || 800,
+  ),
+  /**
+   * Caller lifetime talk-minute milestones → wallet coin rewards.
+   * Thresholds are cumulative connected minutes.
+   */
+  talkMilestones: [
+    {
+      minutes: 30,
+      coins: Number(process.env.MILESTONE_30_COINS || 50),
+    },
+    {
+      minutes: 60,
+      coins: Number(process.env.MILESTONE_60_COINS || 100),
+    },
+    {
+      minutes: 120,
+      coins: Number(process.env.MILESTONE_120_COINS || 150),
+    },
+  ],
+  /** Non-VIP callers pay this many coins per outbound chat message. VIP = free. */
+  coinsPerChatMessage: Number(process.env.COINS_PER_CHAT_MESSAGE || 10),
   /** VIP plans (INR). Weekly gets activation bonus wallet coins. */
   vipPlans: {
     weekly: {
@@ -67,6 +94,16 @@ const config = {
   // Set AWS_S3_PUBLIC_READ=true only if the bucket/objects are publicly readable.
   s3PublicRead: String(process.env.AWS_S3_PUBLIC_READ || '').toLowerCase() === 'true',
   s3SignedUrlExpires: Number(process.env.AWS_S3_SIGNED_URL_EXPIRES || 604800),
+
+  /**
+   * Video calling media provider.
+   * VIDEO_CALL_PROVIDER=auto|mock|getstream
+   * auto = use GetStream when STREAM_API_KEY + STREAM_API_SECRET are set.
+   */
+  videoCallProvider: (process.env.VIDEO_CALL_PROVIDER || 'auto').trim(),
+  streamApiKey: (process.env.STREAM_API_KEY || '').trim(),
+  streamApiSecret: (process.env.STREAM_API_SECRET || '').trim(),
+  streamTokenTtl: (process.env.STREAM_TOKEN_TTL || '6h').trim(),
 };
 
 if (!config.mongoUri) {
@@ -80,6 +117,15 @@ if (!config.emailUser || !config.emailAppPassword) {
 if (!config.s3Bucket || !config.s3AccessKeyId || !config.s3SecretAccessKey) {
   console.warn(
     'Warning: AWS S3 is not fully configured — set AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY in .env',
+  );
+}
+if (config.streamApiKey && config.streamApiSecret) {
+  console.log(
+    `[video] GetStream credentials loaded (provider mode: ${config.videoCallProvider})`,
+  );
+} else {
+  console.warn(
+    '[video] STREAM_API_KEY / STREAM_API_SECRET not set — video calls use mock media',
   );
 }
 

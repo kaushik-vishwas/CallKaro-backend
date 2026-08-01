@@ -62,6 +62,191 @@ function buildRewardsSnapshot(caller) {
       claimedDates,
       endsAfterDays: totalDays,
     },
+    milestones: buildMilestonesSnapshot(caller),
+  };
+}
+
+function talkMilestoneDefs() {
+  return (config.talkMilestones || []).map(row => ({
+    minutes: Number(row.minutes),
+    coins: Number(row.coins),
+  }));
+}
+
+function buildMilestonesSnapshot(caller) {
+  const lifetimeSeconds = Math.max(0, Number(caller.lifetimeTalkSeconds || 0));
+  const lifetimeMinutes = Math.floor(lifetimeSeconds / 60);
+  const claimed = new Set(
+    (Array.isArray(caller.claimedTalkMilestones)
+      ? caller.claimedTalkMilestones
+      : []
+    ).map(Number),
+  );
+  const items = talkMilestoneDefs().map(def => {
+    const unlocked = lifetimeMinutes >= def.minutes;
+    const isClaimed = claimed.has(def.minutes);
+    return {
+      minutes: def.minutes,
+      coins: def.coins,
+      unlocked,
+      claimed: isClaimed,
+      claimable: unlocked && !isClaimed,
+    };
+  });
+  const nextClaimable = items.find(item => item.claimable) || null;
+  return {
+    lifetimeTalkSeconds: lifetimeSeconds,
+    lifetimeTalkMinutes: lifetimeMinutes,
+    items,
+    nextClaimable,
+  };
+}
+
+/**
+ * After a connected call ends: accumulate talk time and notify newly unlocked milestones.
+ * Mutates + saves caller.
+ */
+async function recordTalkTimeAndUnlockMilestones(callerId, durationSeconds) {
+  const added = Math.max(0, Math.floor(Number(durationSeconds) || 0));
+  if (!callerId || added <= 0) {
+    return null;
+  }
+  const caller = await findUserById(callerId);
+  if (!caller) {
+    return null;
+  }
+
+  const beforeMinutes = Math.floor(
+    Math.max(0, Number(caller.lifetimeTalkSeconds || 0)) / 60,
+  );
+  caller.lifetimeTalkSeconds =
+    Math.max(0, Number(caller.lifetimeTalkSeconds || 0)) + added;
+  const afterMinutes = Math.floor(caller.lifetimeTalkSeconds / 60);
+
+  const notified = new Set(
+    (Array.isArray(caller.notifiedTalkMilestones)
+      ? caller.notifiedTalkMilestones
+      : []
+    ).map(Number),
+  );
+  const newlyUnlocked = [];
+
+  for (const def of talkMilestoneDefs()) {
+    if (
+      beforeMinutes < def.minutes &&
+      afterMinutes >= def.minutes &&
+      !notified.has(def.minutes)
+    ) {
+      newlyUnlocked.push(def);
+      notified.add(def.minutes);
+    }
+  }
+
+  caller.notifiedTalkMilestones = Array.from(notified);
+  await caller.save();
+
+  if (newlyUnlocked.length) {
+    const notificationService = require('./notification.service');
+    for (const def of newlyUnlocked) {
+      const ready = def.minutes === 60;
+      notificationService
+        .createForCaller({
+          callerId,
+          type: 'milestone_unlocked',
+          title: ready
+            ? `${def.minutes}-minute reward ready`
+            : `${def.minutes}-minute milestone unlocked`,
+          body: ready
+            ? `Your ${def.minutes}-minute milestone reward is ready to claim. ${def.coins} Coins`
+            : `Congratulations! You've unlocked your ${def.minutes}-minute reward. ${def.coins} Coins`,
+          data: {
+            minutes: def.minutes,
+            coins: def.coins,
+            lifetimeTalkMinutes: afterMinutes,
+          },
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  return buildMilestonesSnapshot(caller);
+}
+
+async function getMilestonesStatus(userId) {
+  const caller = await findUserById(userId);
+  if (!caller) {
+    return null;
+  }
+  return buildMilestonesSnapshot(caller);
+}
+
+async function claimTalkMilestone(userId, minutesInput) {
+  const minutes = Number(minutesInput);
+  const def = talkMilestoneDefs().find(row => row.minutes === minutes);
+  if (!def) {
+    return {ok: false, message: 'Unknown milestone.'};
+  }
+
+  const caller = await findUserById(userId);
+  if (!caller) {
+    return {ok: false, message: 'Caller not found.'};
+  }
+
+  const lifetimeMinutes = Math.floor(
+    Math.max(0, Number(caller.lifetimeTalkSeconds || 0)) / 60,
+  );
+  if (lifetimeMinutes < def.minutes) {
+    return {
+      ok: false,
+      message: `Complete ${def.minutes} talk minutes to unlock this reward.`,
+    };
+  }
+
+  const claimed = Array.isArray(caller.claimedTalkMilestones)
+    ? [...caller.claimedTalkMilestones]
+    : [];
+  if (claimed.map(Number).includes(def.minutes)) {
+    return {ok: false, message: 'Milestone already claimed.'};
+  }
+
+  claimed.push(def.minutes);
+  caller.claimedTalkMilestones = claimed;
+  caller.coins = Number(caller.coins || 0) + def.coins;
+
+  const notified = new Set(
+    (Array.isArray(caller.notifiedTalkMilestones)
+      ? caller.notifiedTalkMilestones
+      : []
+    ).map(Number),
+  );
+  notified.add(def.minutes);
+  caller.notifiedTalkMilestones = Array.from(notified);
+  await caller.save();
+
+  const notificationService = require('./notification.service');
+  notificationService
+    .createForCaller({
+      callerId: userId,
+      type: 'milestone_claimed',
+      title: 'Reward Claimed!',
+      body: `${def.coins} coins added to your wallet for the ${def.minutes}-minute milestone.`,
+      data: {
+        minutes: def.minutes,
+        coins: def.coins,
+        coinBalance: caller.coins,
+      },
+    })
+    .catch(() => undefined);
+
+  return {
+    ok: true,
+    data: {
+      minutes: def.minutes,
+      coinsAdded: def.coins,
+      coinBalance: caller.coins,
+      milestones: buildMilestonesSnapshot(caller),
+      message: `${def.coins} coins added to your wallet.`,
+    },
   };
 }
 
@@ -955,4 +1140,7 @@ module.exports = {
   getVipStatus,
   activateVip,
   listDiscoverReceivers,
+  recordTalkTimeAndUnlockMilestones,
+  getMilestonesStatus,
+  claimTalkMilestone,
 };

@@ -22,6 +22,39 @@ router.post('/claim-daily-reward', authRequired, callerController.claimDailyRewa
 router.post('/claim-welcome-talk', authRequired, callerController.claimWelcomeTalk);
 router.post('/consume-welcome-talk', authRequired, callerController.consumeWelcomeTalk);
 router.get('/rewards-status', authRequired, callerController.rewardsStatus);
+router.get('/milestones', authRequired, callerController.milestonesStatus);
+router.post(
+  '/milestones/:minutes/claim',
+  authRequired,
+  callerController.claimMilestone,
+);
+
+// Wallet activity (token required)
+router.get(
+  '/wallet-transactions',
+  authRequired,
+  callerController.walletTransactions,
+);
+router.get(
+  '/support/categories',
+  authRequired,
+  callerController.listSupportCategories,
+);
+router.get(
+  '/support/tickets',
+  authRequired,
+  callerController.listSupportTickets,
+);
+router.post(
+  '/support/tickets',
+  authRequired,
+  callerController.createSupportTicket,
+);
+router.get(
+  '/support/tickets/:ticketId',
+  authRequired,
+  callerController.getSupportTicket,
+);
 
 // Recharge / Razorpay (token required)
 router.post('/recharge/create-order', authRequired, callerController.createOrder);

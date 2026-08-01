@@ -100,6 +100,8 @@ function attachChatSocket(httpServer, app) {
             clientId,
             message: result.message,
             conversation: result.conversation,
+            coinsCharged: result.coinsCharged || 0,
+            callerBalance: result.callerBalance || null,
           });
         }
       } catch (error) {

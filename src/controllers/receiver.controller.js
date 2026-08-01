@@ -275,9 +275,10 @@ async function requestAccountDeletion(req, res) {
 async function listSupportTickets(req, res) {
   try {
     const supportTicketService = require('../services/supportTicket.service');
-    const tickets = await supportTicketService.listTickets(req.auth.receiverId, {
-      limit: req.query.limit,
-    });
+    const tickets = await supportTicketService.listTickets(
+      {receiverId: req.auth.receiverId},
+      {limit: req.query.limit},
+    );
     return ok(res, {tickets}, 'Tickets fetched');
   } catch (error) {
     console.error('[receiver.listSupportTickets]', error);
@@ -289,7 +290,7 @@ async function getSupportTicket(req, res) {
   try {
     const supportTicketService = require('../services/supportTicket.service');
     const result = await supportTicketService.getTicket(
-      req.auth.receiverId,
+      {receiverId: req.auth.receiverId},
       req.params.ticketId,
     );
     if (!result.ok) {
@@ -306,7 +307,7 @@ async function createSupportTicket(req, res) {
   try {
     const supportTicketService = require('../services/supportTicket.service');
     const result = await supportTicketService.createTicket(
-      req.auth.receiverId,
+      {receiverId: req.auth.receiverId},
       req.body || {},
     );
     if (!result.ok) {

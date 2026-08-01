@@ -27,6 +27,8 @@ function publicMessage(doc, viewerRole) {
     isRead: Boolean(doc.readAt),
     senderRole: doc.senderRole,
     createdAt: doc.createdAt,
+    coinsCharged: Number(doc.coinsCharged || 0),
+    earningsInr: Number(doc.earningsInr || 0),
   };
 }
 
@@ -40,6 +42,8 @@ function wireMessage(doc) {
     isRead: Boolean(doc.readAt),
     senderRole: doc.senderRole,
     createdAt: doc.createdAt,
+    coinsCharged: Number(doc.coinsCharged || 0),
+    earningsInr: Number(doc.earningsInr || 0),
   };
 }
 
@@ -240,11 +244,66 @@ async function sendMessage(auth, conversationId, text) {
   const senderId =
     viewerRole === 'caller' ? auth.userId : auth.receiverId;
 
+  let coinsCharged = 0;
+  let earningsInr = 0;
+  let callerBalance = null;
+
+  // Non-VIP callers pay per message; VIP chat is free. Receiver messages are free.
+  if (viewerRole === 'caller') {
+    const {config} = require('../config');
+    const cost = Math.max(0, Number(config.coinsPerChatMessage) || 10);
+    const caller = await Caller.findOne({id: auth.userId});
+    if (!caller) {
+      const err = new Error('Caller not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const isVip = Boolean(
+      caller.vipExpiresAt &&
+        new Date(caller.vipExpiresAt).getTime() > Date.now(),
+    );
+
+    if (!isVip && cost > 0) {
+      const wallet = Number(caller.coins || 0);
+      if (wallet < cost) {
+        const err = new Error(
+          'Not enough coins to send a message. Recharge or upgrade to VIP for free chat.',
+        );
+        err.statusCode = 402;
+        throw err;
+      }
+
+      caller.coins = wallet - cost;
+      await caller.save();
+      coinsCharged = cost;
+
+      const earningsService = require('./earnings.service');
+      const credit = await earningsService.creditReceiverFromCoins({
+        receiverId: conversation.receiverId,
+        callerId: auth.userId,
+        coins: cost,
+        source: 'chat',
+        referenceId: conversation.id,
+        meta: {conversationId: conversation.id},
+      });
+      earningsInr = credit.amountInr || 0;
+    }
+
+    callerBalance = {
+      coins: Number(caller.coins || 0),
+      rewardCoins: Number(caller.rewardCoins || 0),
+      isVip,
+    };
+  }
+
   const message = await Message.create({
     conversationId,
     senderRole: viewerRole,
     senderId,
     text: trimmed,
+    coinsCharged,
+    earningsInr,
   });
 
   conversation.lastMessage = trimmed;
@@ -264,6 +323,9 @@ async function sendMessage(auth, conversationId, text) {
     conversation: await mapConversationForViewer(convPlain, viewerRole),
     conversationDoc: convPlain,
     viewerRole,
+    callerBalance,
+    coinsCharged,
+    earningsInr,
   };
 }
 

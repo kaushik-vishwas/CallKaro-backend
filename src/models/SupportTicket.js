@@ -4,6 +4,7 @@ const SUPPORT_CATEGORIES = [
   'Technical Issue',
   'Payment & Recharge',
   'Withdrawal Issue',
+  'VIP Membership',
   'Profile Verification',
   'Profile Update',
   'Call Connection Problem',
@@ -18,7 +19,10 @@ const SUPPORT_CATEGORIES = [
 const supportTicketSchema = new mongoose.Schema(
   {
     id: {type: String, required: true, unique: true, index: true},
-    receiverId: {type: String, required: true, index: true},
+    /** Set for receiver-created tickets */
+    receiverId: {type: String, default: null, index: true},
+    /** Set for caller-created tickets */
+    callerId: {type: String, default: null, index: true},
     category: {
       type: String,
       enum: SUPPORT_CATEGORIES,
@@ -44,9 +48,15 @@ const supportTicketSchema = new mongoose.Schema(
       default: 'open',
       index: true,
     },
+    adminNote: {type: String, default: '', trim: true, maxlength: 1000},
+    resolvedAt: {type: Date, default: null},
+    resolvedByAdminId: {type: String, default: null},
   },
   {timestamps: true, collection: 'support_tickets'},
 );
+
+supportTicketSchema.index({callerId: 1, createdAt: -1});
+supportTicketSchema.index({receiverId: 1, createdAt: -1});
 
 module.exports = {
   SupportTicket: mongoose.model('SupportTicket', supportTicketSchema),

@@ -61,6 +61,10 @@ const callSchema = new mongoose.Schema(
     rewardCoinsUsed: {type: Number, default: 0},
     walletCoinsUsed: {type: Number, default: 0},
     giftsCoinsCharged: {type: Number, default: 0},
+    /** Internal coin units credited to receiver (800/min share). */
+    receiverCoinsCredited: {type: Number, default: 0},
+    /** INR credited to receiver wallet from this call. */
+    receiverEarningsInr: {type: Number, default: 0},
     gifts: {
       type: [
         {

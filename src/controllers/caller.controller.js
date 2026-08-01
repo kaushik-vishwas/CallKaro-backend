@@ -300,6 +300,106 @@ async function rewardsStatus(req, res) {
   }
 }
 
+async function milestonesStatus(req, res) {
+  try {
+    const status = await callerService.getMilestonesStatus(req.auth.userId);
+    if (!status) {
+      return fail(res, 'Caller not found.', 404);
+    }
+    return ok(res, status, 'Milestones status fetched');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to fetch milestones.');
+  }
+}
+
+async function claimMilestone(req, res) {
+  try {
+    const minutes = Number(req.params.minutes || req.body?.minutes);
+    const result = await callerService.claimTalkMilestone(
+      req.auth.userId,
+      minutes,
+    );
+    if (!result.ok) {
+      return fail(res, result.message);
+    }
+    return ok(res, result.data, 'Milestone reward claimed');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to claim milestone.');
+  }
+}
+
+async function walletTransactions(req, res) {
+  try {
+    const callerWalletTransactions = require('../services/callerWalletTransactions.service');
+    const limit = Number(req.query?.limit) || 50;
+    const data = await callerWalletTransactions.listWalletTransactions(
+      req.auth.userId,
+      {limit},
+    );
+    return ok(res, data, 'Wallet transactions fetched');
+  } catch (error) {
+    return fail(res, error.message || 'Failed to fetch wallet transactions.', 500);
+  }
+}
+
+async function listSupportCategories(req, res) {
+  try {
+    const {SUPPORT_CATEGORIES} = require('../services/supportTicket.service');
+    return ok(res, {categories: SUPPORT_CATEGORIES}, 'Categories fetched');
+  } catch (error) {
+    console.error('[caller.listSupportCategories]', error);
+    return fail(res, 'Failed to fetch categories.', 500);
+  }
+}
+
+async function listSupportTickets(req, res) {
+  try {
+    const supportTicketService = require('../services/supportTicket.service');
+    const tickets = await supportTicketService.listTickets(
+      {callerId: req.auth.userId},
+      {limit: req.query.limit},
+    );
+    return ok(res, {tickets}, 'Tickets fetched');
+  } catch (error) {
+    console.error('[caller.listSupportTickets]', error);
+    return fail(res, 'Failed to fetch tickets.', 500);
+  }
+}
+
+async function getSupportTicket(req, res) {
+  try {
+    const supportTicketService = require('../services/supportTicket.service');
+    const result = await supportTicketService.getTicket(
+      {callerId: req.auth.userId},
+      req.params.ticketId,
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {ticket: result.ticket}, 'Ticket fetched');
+  } catch (error) {
+    console.error('[caller.getSupportTicket]', error);
+    return fail(res, 'Failed to fetch ticket.', 500);
+  }
+}
+
+async function createSupportTicket(req, res) {
+  try {
+    const supportTicketService = require('../services/supportTicket.service');
+    const result = await supportTicketService.createTicket(
+      {callerId: req.auth.userId},
+      req.body || {},
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {ticket: result.ticket}, 'Ticket created successfully', 201);
+  } catch (error) {
+    console.error('[caller.createSupportTicket]', error);
+    return fail(res, 'Failed to create ticket.', 500);
+  }
+}
+
 async function createOrder(req, res) {
   try {
     const amount = Number(req.body?.amount);
@@ -528,6 +628,13 @@ module.exports = {
   claimWelcomeTalk,
   consumeWelcomeTalk,
   rewardsStatus,
+  milestonesStatus,
+  claimMilestone,
+  walletTransactions,
+  listSupportCategories,
+  listSupportTickets,
+  getSupportTicket,
+  createSupportTicket,
   createOrder,
   verifyPayment,
   createVipOrder,

@@ -7,6 +7,7 @@ const adminCallersController = require('../../controllers/adminCallers.controlle
 const adminReceiversController = require('../../controllers/adminReceivers.controller');
 const adminTransactionsController = require('../../controllers/adminTransactions.controller');
 const adminReportsController = require('../../controllers/adminReports.controller');
+const adminSupportTicketsController = require('../../controllers/adminSupportTickets.controller');
 
 const router = express.Router();
 
@@ -108,6 +109,27 @@ router.post(
   '/reports/:id/terminate',
   adminAuthRequired,
   adminReportsController.terminateReport,
+);
+
+router.get(
+  '/support-tickets/stats',
+  adminAuthRequired,
+  adminSupportTicketsController.supportTicketStats,
+);
+router.get(
+  '/support-tickets',
+  adminAuthRequired,
+  adminSupportTicketsController.listSupportTickets,
+);
+router.get(
+  '/support-tickets/:id',
+  adminAuthRequired,
+  adminSupportTicketsController.getSupportTicket,
+);
+router.patch(
+  '/support-tickets/:id/status',
+  adminAuthRequired,
+  adminSupportTicketsController.updateSupportTicketStatus,
 );
 
 module.exports = router;

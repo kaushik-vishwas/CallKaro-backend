@@ -8,6 +8,8 @@ const NOTIFICATION_TYPES = [
   'vip_success',
   'vip_failed',
   'daily_checkin',
+  'milestone_unlocked',
+  'milestone_claimed',
   'out_of_coins',
   'receiver_online',
   // Shared

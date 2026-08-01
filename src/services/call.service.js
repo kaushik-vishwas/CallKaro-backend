@@ -79,6 +79,8 @@ function publicCall(doc, {includeProvider = true, caller = null} = {}) {
     coinsCharged: row.coinsCharged || 0,
     giftsCoinsCharged,
     gifts,
+    receiverCoinsCredited: Number(row.receiverCoinsCredited || 0),
+    receiverEarningsInr: Number(row.receiverEarningsInr || 0),
     welcomeMinutesUsed: row.welcomeMinutesUsed || 0,
     rewardCoinsUsed: row.rewardCoinsUsed || 0,
     walletCoinsUsed: row.walletCoinsUsed || 0,
@@ -176,7 +178,46 @@ function chargeOneMinute(caller, coinRate, call) {
     return {ok: true, source: 'wallet'};
   }
 
-  return {ok: false};
+  return {ok: false, source: null};
+}
+
+/**
+ * Credit receiver for billed minutes at internal 800 coins/min → INR.
+ * Mutates call counters; call must be saved by caller.
+ */
+async function syncReceiverCallEarnings(call) {
+  const {config} = require('../config');
+  const share = Math.max(0, Number(config.receiverCoinsPerVideoMinute) || 800);
+  const expected = Math.max(0, Number(call.billedMinutes) || 0) * share;
+  const already = Math.max(0, Number(call.receiverCoinsCredited) || 0);
+  const delta = expected - already;
+  if (delta <= 0 || !call.receiverId) {
+    return {ok: true, creditedCoins: 0, amountInr: 0};
+  }
+
+  const earningsService = require('./earnings.service');
+  const credit = await earningsService.creditReceiverFromCoins({
+    receiverId: call.receiverId,
+    callerId: call.callerId,
+    coins: delta,
+    source: 'video_call',
+    referenceId: call.id,
+    meta: {
+      callId: call.id,
+      billedMinutes: call.billedMinutes,
+      sharePerMinute: share,
+    },
+  });
+
+  call.receiverCoinsCredited = already + delta;
+  call.receiverEarningsInr =
+    Number(call.receiverEarningsInr || 0) + Number(credit.amountInr || 0);
+
+  return {
+    ok: true,
+    creditedCoins: delta,
+    amountInr: credit.amountInr || 0,
+  };
 }
 
 async function findActiveForUser(auth) {
@@ -216,6 +257,7 @@ async function startCall(auth, receiverId) {
   if (receiverBusy) {
     const err = new Error('Receiver is busy on another call.');
     err.statusCode = 409;
+    err.code = 'receiver_busy';
     throw err;
   }
 
@@ -244,6 +286,12 @@ async function startCall(auth, receiverId) {
   if (receiver.status !== 'active') {
     const err = new Error('Receiver is not available.');
     err.statusCode = 404;
+    throw err;
+  }
+  if (!receiver.isOnline) {
+    const err = new Error('Receiver is currently Offline');
+    err.statusCode = 409;
+    err.code = 'receiver_offline';
     throw err;
   }
 
@@ -290,19 +338,26 @@ async function startCall(auth, receiverId) {
     throw err;
   }
 
+  const streamVideo = require('./streamVideo.service');
+  const videoProvider = streamVideo.resolveVideoProvider();
+
   const call = await Call.create({
     callerId,
     receiverId: rid,
     status: 'ringing',
-    provider: 'mock',
+    provider: videoProvider,
     providerPayload: {
-      // Placeholder for GetStream: {apiKey, token, callCid}
-      mode: 'mock',
+      mode: videoProvider,
     },
     coinRatePerMinute: coinRate,
     callerSnapshot: {
       name: caller.name || 'Caller',
       avatarUrl: caller.avatarUrl || '',
+      city: caller.city || caller.location || '',
+      isVip: Boolean(
+        caller.vipExpiresAt &&
+          new Date(caller.vipExpiresAt).getTime() > Date.now(),
+      ),
     },
     receiverSnapshot: {
       name: receiver.name || 'Receiver',
@@ -311,11 +366,130 @@ async function startCall(auth, receiverId) {
     },
   });
 
+  call.providerPayload = streamVideo.buildProviderPayload(call.id);
+  call.markModified('providerPayload');
+  await call.save();
+
+  try {
+    const callQueueService = require('./callQueue.service');
+    await callQueueService.fulfillQueueEntry(callerId, rid);
+  } catch {
+    /* queue optional */
+  }
+
   emitToParticipants(call, 'call:incoming');
   emitToParticipants(call, 'call:ringing');
   scheduleRingTimeout(call.id);
 
   return publicCall(call, {caller});
+}
+
+/**
+ * Pick any online, free receiver at random and start a video call.
+ */
+async function startRandomCall(auth) {
+  if (auth.role !== 'caller') {
+    const err = new Error('Only callers can start a call.');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const existing = await findActiveForUser(auth);
+  if (existing) {
+    const err = new Error('You already have an active call.');
+    err.statusCode = 409;
+    err.call = publicCall(existing);
+    throw err;
+  }
+
+  const callerId = auth.userId;
+  const busyRows = await Call.find({status: {$in: ACTIVE_STATUSES}})
+    .select('receiverId')
+    .lean();
+  const busyIds = new Set(busyRows.map(row => String(row.receiverId)));
+
+  let blockedIds = new Set();
+  try {
+    const ChatBlock = require('../models/ChatBlock');
+    const blocks = await ChatBlock.find({
+      $or: [
+        {blockerRole: 'caller', blockerId: callerId, blockedRole: 'receiver'},
+        {blockerRole: 'receiver', blockedRole: 'caller', blockedId: callerId},
+      ],
+    })
+      .select('blockerId blockedId blockerRole')
+      .lean();
+    blockedIds = new Set(
+      blocks.map(row =>
+        row.blockerRole === 'caller'
+          ? String(row.blockedId)
+          : String(row.blockerId),
+      ),
+    );
+  } catch {
+    /* optional */
+  }
+
+  const candidates = await Receiver.find({
+    status: 'active',
+    isOnline: true,
+  })
+    .select('id photos')
+    .lean();
+
+  const available = candidates.filter(row => {
+    const id = String(row.id);
+    if (busyIds.has(id) || blockedIds.has(id)) {
+      return false;
+    }
+    const photos = Array.isArray(row.photos) ? row.photos : [];
+    return photos.length > 0;
+  });
+
+  if (!available.length) {
+    const err = new Error(
+      'No receivers are available right now. Try again in a moment.',
+    );
+    err.statusCode = 404;
+    err.code = 'no_receivers_available';
+    throw err;
+  }
+
+  // Shuffle and try a few in case of race (someone goes busy mid-request).
+  for (let i = available.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = available[i];
+    available[i] = available[j];
+    available[j] = tmp;
+  }
+
+  let lastError = null;
+  const maxAttempts = Math.min(available.length, 5);
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      return await startCall(auth, available[i].id);
+    } catch (error) {
+      lastError = error;
+      if (
+        error?.code === 'receiver_busy' ||
+        error?.code === 'receiver_offline' ||
+        error?.code === 'receiver_blocked'
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  const err = new Error(
+    'No receivers are available right now. Try again in a moment.',
+  );
+  err.statusCode = 404;
+  err.code = 'no_receivers_available';
+  throw err;
 }
 
 async function acceptCall(auth, callId) {
@@ -359,12 +533,13 @@ async function acceptCall(auth, callId) {
       throw err;
     }
     await caller.save();
+    await syncReceiverCallEarnings(call);
     await call.save();
   }
 
   emitToParticipants(call, 'call:accepted');
   emitToParticipants(call, 'call:connected');
-  return publicCall(call);
+  return publicCall(call, {caller});
 }
 
 async function rejectCall(auth, callId) {
@@ -457,6 +632,9 @@ async function endCall(auth, callId, reason) {
   call.endReason =
     reason ||
     (auth.role === 'receiver' ? 'receiver_hangup' : 'caller_hangup');
+  if (call.connectedAt) {
+    await syncReceiverCallEarnings(call);
+  }
   await call.save();
 
   if (call.connectedAt) {
@@ -464,6 +642,14 @@ async function endCall(auth, callId, reason) {
       {id: call.receiverId},
       {$inc: {totalCalls: 1}},
     ).catch(() => undefined);
+
+    const callerService = require('./caller.service');
+    await callerService
+      .recordTalkTimeAndUnlockMilestones(
+        call.callerId,
+        call.durationSeconds || 0,
+      )
+      .catch(() => undefined);
   }
 
   emitToParticipants(call, 'call:ended');
@@ -506,6 +692,7 @@ async function heartbeat(auth, callId) {
         call.status = 'ended';
         call.endedAt = now;
         call.endReason = 'insufficient_coins';
+        await syncReceiverCallEarnings(call);
         await caller.save();
         await call.save();
         emitToParticipants(call, 'call:ended', {forceEnd: true});
@@ -515,6 +702,7 @@ async function heartbeat(auth, callId) {
     await caller.save();
   }
 
+  await syncReceiverCallEarnings(call);
   await call.save();
   return attachCallerBalance(call);
 }
@@ -651,6 +839,7 @@ async function sendGift(auth, callId, giftId) {
 
 module.exports = {
   startCall,
+  startRandomCall,
   acceptCall,
   rejectCall,
   endCall,

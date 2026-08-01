@@ -71,6 +71,8 @@ async function sendMessage(req, res) {
       {
         message: result.message,
         conversation: result.conversation,
+        coinsCharged: result.coinsCharged || 0,
+        callerBalance: result.callerBalance || null,
       },
       'Message sent',
       201,

@@ -38,6 +38,16 @@ const callerSchema = new mongoose.Schema(
     rewardCoinsDate: {type: String, default: null},
     dailyCheckInClaimedDates: {type: [String], default: []},
 
+    /**
+     * Lifetime connected talk time (seconds) across all calls.
+     * Used for 30 / 60 / 120 minute milestone rewards.
+     */
+    lifetimeTalkSeconds: {type: Number, default: 0},
+    /** Claimed milestone minute thresholds, e.g. [30, 60]. */
+    claimedTalkMilestones: {type: [Number], default: []},
+    /** Milestones already notified as unlocked. */
+    notifiedTalkMilestones: {type: [Number], default: []},
+
     /** VIP membership — active while vipExpiresAt is in the future. */
     vipPlan: {type: String, default: null},
     vipExpiresAt: {type: Date, default: null},
