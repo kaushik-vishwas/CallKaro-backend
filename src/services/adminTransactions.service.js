@@ -95,30 +95,45 @@ function purposeFromTypeFilter(type) {
 
 function statusFromFilter(status) {
   const s = String(status || 'all').toLowerCase();
-  if (s === 'successful' || s === 'paid') return 'paid';
+  // Transactions module only lists settled gateway payments.
+  // Pending/created checkouts are never shown as "transactions".
+  if (s === 'successful' || s === 'paid' || s === 'all' || !s) return 'paid';
   if (s === 'failed') return 'failed';
-  if (s === 'pending' || s === 'created') return 'created';
-  return null;
+  return 'paid';
+}
+
+/** Paid orders that completed via Razorpay (excludes abandoned + local test bypass). */
+function realTransactionFilter(extra = {}) {
+  return {
+    status: 'paid',
+    razorpayPaymentId: {
+      $type: 'string',
+      $ne: '',
+      $not: /^pay_test_/i,
+    },
+    ...extra,
+  };
 }
 
 async function getTransactionStats() {
+  const paidMatch = realTransactionFilter();
   const [totals] = await Order.aggregate([
     {
       $facet: {
-        all: [{$count: 'count'}],
+        paid: [{$match: paidMatch}, {$count: 'count'}],
         paidVip: [
-          {$match: {status: 'paid', purpose: 'vip'}},
+          {$match: {...paidMatch, purpose: 'vip'}},
           {$count: 'count'},
         ],
         revenue: [
-          {$match: {status: 'paid'}},
+          {$match: paidMatch},
           {$group: {_id: null, total: {$sum: {$ifNull: ['$amount', 0]}}}},
         ],
       },
     },
   ]);
 
-  const totalTransactions = totals?.all?.[0]?.count || 0;
+  const totalTransactions = totals?.paid?.[0]?.count || 0;
   const vipPurchases = totals?.paidVip?.[0]?.count || 0;
   const totalRevenue = totals?.revenue?.[0]?.total || 0;
 
@@ -141,28 +156,37 @@ async function listTransactions({
 } = {}) {
   const pageNum = Math.max(1, Number(page) || 1);
   const limitNum = Math.min(100, Math.max(1, Number(limit) || 10));
-  const filter = {};
+  const filter = realTransactionFilter();
 
   const purpose = purposeFromTypeFilter(type);
   if (purpose) filter.purpose = purpose;
 
   const orderStatus = statusFromFilter(status);
-  if (orderStatus) filter.status = orderStatus;
+  filter.status = orderStatus;
+
+  // Failed filter still requires a real gateway payment id when present.
+  if (orderStatus === 'failed') {
+    filter.razorpayPaymentId = {
+      $type: 'string',
+      $ne: '',
+      $not: /^pay_test_/i,
+    };
+  }
 
   if (dateFrom || dateTo) {
-    filter.createdAt = {};
+    filter.paidAt = {};
     if (dateFrom) {
       const from = new Date(dateFrom);
-      if (!Number.isNaN(from.getTime())) filter.createdAt.$gte = from;
+      if (!Number.isNaN(from.getTime())) filter.paidAt.$gte = from;
     }
     if (dateTo) {
       const to = new Date(dateTo);
       if (!Number.isNaN(to.getTime())) {
         to.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = to;
+        filter.paidAt.$lte = to;
       }
     }
-    if (!Object.keys(filter.createdAt).length) delete filter.createdAt;
+    if (!Object.keys(filter.paidAt).length) delete filter.paidAt;
   }
 
   const queryText = String(q || '').trim();
@@ -189,7 +213,7 @@ async function listTransactions({
   const [total, orders] = await Promise.all([
     Order.countDocuments(filter),
     Order.find(filter)
-      .sort({createdAt: -1})
+      .sort({paidAt: -1, createdAt: -1})
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .lean(),
@@ -225,6 +249,7 @@ async function getTransactionDetail(id) {
   }
 
   const order = await Order.findOne({
+    ...realTransactionFilter(),
     $or: [{id: rawId}, {razorpayPaymentId: rawId}],
   }).lean();
 
