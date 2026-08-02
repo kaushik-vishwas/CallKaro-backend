@@ -445,7 +445,8 @@ async function verifyStoredOtp(email, otp, purpose) {
   if (Date.now() > new Date(record.expiresAt).getTime()) {
     return {ok: false, message: 'OTP expired. Please request a new one.'};
   }
-  if (String(record.otp) !== String(otp)) {
+  const cleaned = String(otp ?? '').replace(/\D/g, '').trim();
+  if (String(record.otp).trim() !== cleaned) {
     return {ok: false, message: 'Invalid OTP.'};
   }
 

@@ -3,6 +3,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const {registerModuleRoutes} = require('./modules');
 const {ok, fail} = require('./utils/response');
+const streamVideo = require('./services/streamVideo.service');
 
 function createApp() {
   const app = express();
@@ -11,12 +12,22 @@ function createApp() {
   app.use(express.json({limit: '2mb'}));
   app.use(morgan('dev'));
 
+  const healthPayload = () => {
+    const videoProvider = streamVideo.resolveVideoProvider();
+    return {
+      service: 'backend',
+      mode: process.env.NODE_ENV === 'production' ? 'production' : 'local',
+      videoProvider,
+      streamConfigured: streamVideo.hasStreamCredentials(),
+    };
+  };
+
   app.get('/health', (_req, res) => {
-    return ok(res, {service: 'backend', mode: 'local'}, 'OK');
+    return ok(res, healthPayload(), 'OK');
   });
 
   app.get('/api/health', (_req, res) => {
-    return ok(res, {service: 'backend', mode: 'local'}, 'OK');
+    return ok(res, healthPayload(), 'OK');
   });
 
   registerModuleRoutes(app);

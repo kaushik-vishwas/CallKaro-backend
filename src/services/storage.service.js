@@ -120,12 +120,30 @@ async function toAccessUrl(urlOrKey, expiresInSeconds = config.s3SignedUrlExpire
 
   if (!config.s3Bucket) return publicUrl(key);
 
-  return getSignedDownloadUrl(key, expiresInSeconds);
+  // Never hit the default AWS credential chain — it can hang for ~minutes on
+  // EC2/IMDS lookups when keys are missing on the live host.
+  if (!config.s3AccessKeyId || !config.s3SecretAccessKey) {
+    return publicUrl(key);
+  }
+
+  try {
+    return await Promise.race([
+      getSignedDownloadUrl(key, expiresInSeconds),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('sign_timeout')), 2500),
+      ),
+    ]);
+  } catch {
+    return publicUrl(key);
+  }
 }
 
 async function mapAccessUrls(urls) {
   if (!Array.isArray(urls)) return [];
-  return Promise.all(urls.map(url => toAccessUrl(url)));
+  const settled = await Promise.allSettled(urls.map(url => toAccessUrl(url)));
+  return settled.map((result, index) =>
+    result.status === 'fulfilled' ? result.value : urls[index] || '',
+  );
 }
 
 /**

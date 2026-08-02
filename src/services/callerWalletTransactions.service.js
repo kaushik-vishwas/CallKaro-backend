@@ -17,6 +17,15 @@ function planLabel(planId) {
   return planId ? String(planId) : 'Plan';
 }
 
+async function safeFind(label, fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(`[walletTx] ${label} failed:`, error.message || error);
+    return null;
+  }
+}
+
 /**
  * Unified wallet activity for the authenticated caller:
  * paid recharges/VIP, video call spend, gifts, chat charges, daily check-ins.
@@ -24,37 +33,44 @@ function planLabel(planId) {
 async function listWalletTransactions(userId, {limit = 50} = {}) {
   const take = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const perSource = Math.max(take, 40);
+  const uid = String(userId || '');
 
   const [orders, calls, messages, daily] = await Promise.all([
-    Order.find({userId, status: 'paid'})
-      .sort({paidAt: -1, updatedAt: -1})
-      .limit(perSource)
-      .lean(),
-    Call.find({
-      callerId: userId,
-      $or: [
-        {coinsCharged: {$gt: 0}},
-        {giftsCoinsCharged: {$gt: 0}},
-        {'gifts.0': {$exists: true}},
-      ],
-    })
-      .sort({endedAt: -1, updatedAt: -1})
-      .limit(perSource)
-      .lean(),
-    Message.find({
-      senderId: userId,
-      senderRole: 'caller',
-      coinsCharged: {$gt: 0},
-    })
-      .sort({createdAt: -1})
-      .limit(perSource)
-      .lean(),
-    DailyReward.findOne({userId}).lean(),
+    safeFind('orders', () =>
+      Order.find({userId: uid, status: 'paid'})
+        .sort({paidAt: -1, updatedAt: -1})
+        .limit(perSource)
+        .lean(),
+    ),
+    safeFind('calls', () =>
+      Call.find({
+        callerId: uid,
+        $or: [
+          {coinsCharged: {$gt: 0}},
+          {giftsCoinsCharged: {$gt: 0}},
+          {'gifts.0': {$exists: true}},
+        ],
+      })
+        .sort({endedAt: -1, updatedAt: -1})
+        .limit(perSource)
+        .lean(),
+    ),
+    safeFind('messages', () =>
+      Message.find({
+        senderId: uid,
+        senderRole: 'caller',
+        coinsCharged: {$gt: 0},
+      })
+        .sort({createdAt: -1})
+        .limit(perSource)
+        .lean(),
+    ),
+    safeFind('daily', () => DailyReward.findOne({userId: uid}).lean()),
   ]);
 
   const items = [];
 
-  for (const order of orders) {
+  for (const order of orders || []) {
     const when = order.paidAt || order.updatedAt || order.createdAt;
     if (order.purpose === 'vip') {
       const coins = Number(order.coins) || 0;
@@ -88,7 +104,7 @@ async function listWalletTransactions(userId, {limit = 50} = {}) {
     });
   }
 
-  for (const call of calls) {
+  for (const call of calls || []) {
     const name = (call.receiverSnapshot && call.receiverSnapshot.name) || 'Receiver';
     const mins =
       Number(call.billedMinutes) ||
@@ -113,8 +129,9 @@ async function listWalletTransactions(userId, {limit = 50} = {}) {
     for (const gift of call.gifts || []) {
       const giftCoins = Number(gift.coins) || 0;
       if (giftCoins <= 0) continue;
+      const giftId = gift.id || gift.giftId || `${giftCoins}`;
       items.push({
-        id: `gift:${call.id}:${gift.id}`,
+        id: `gift:${call.id}:${giftId}`,
         type: 'gift',
         title: `Gift to ${name}`,
         subtitle: gift.name || 'Gift',
@@ -126,7 +143,7 @@ async function listWalletTransactions(userId, {limit = 50} = {}) {
     }
   }
 
-  for (const msg of messages) {
+  for (const msg of messages || []) {
     const charged = Number(msg.coinsCharged) || 0;
     if (charged <= 0) continue;
     items.push({

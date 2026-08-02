@@ -98,10 +98,17 @@ async function mapConversationForViewer(conversation, viewerRole) {
     if (receiver) {
       name = receiver.name;
       age = Number(receiver.age) || 0;
-      const photos = await storageService.mapAccessUrls(
-        Array.isArray(receiver.photos) ? receiver.photos : [],
-      );
-      avatarUrl = photos[0] || '';
+      const rawPhotos = Array.isArray(receiver.photos) ? receiver.photos : [];
+      // Prefer first photo immediately; signing is best-effort and must not block chat.
+      avatarUrl = rawPhotos[0] || '';
+      try {
+        const photos = await storageService.mapAccessUrls(rawPhotos.slice(0, 1));
+        if (photos[0]) {
+          avatarUrl = photos[0];
+        }
+      } catch {
+        /* keep raw URL */
+      }
       online = Boolean(receiver.isOnline);
     }
   } else {
@@ -111,6 +118,13 @@ async function mapConversationForViewer(conversation, viewerRole) {
     if (caller) {
       name = caller.name;
       avatarUrl = caller.avatarUrl || '';
+      try {
+        if (avatarUrl) {
+          avatarUrl = await storageService.toAccessUrl(avatarUrl);
+        }
+      } catch {
+        /* keep raw */
+      }
     }
   }
 

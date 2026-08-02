@@ -44,14 +44,30 @@ async function signup(req, res) {
 async function verifyOtp(req, res) {
   try {
     const {email, otp, flow} = req.body || {};
-    if (!isValidEmail(email) || !otp) {
+    const cleanedOtp = String(otp ?? '').replace(/\D/g, '').trim();
+    if (!isValidEmail(email) || !cleanedOtp) {
       return fail(res, 'Email and OTP are required.');
     }
 
     const purpose =
       flow === 'forgot-password' ? 'forgot-password' : 'signup';
 
-    const result = await callerService.verifyStoredOtp(email, otp, purpose);
+    // For signup, ensure pending user exists before consuming the OTP.
+    if (purpose === 'signup') {
+      const pending = await callerService.findUserByEmail(email);
+      if (!pending) {
+        return fail(res, 'User not found for this email.', 404);
+      }
+      if (pending.isVerified) {
+        return fail(res, 'Account already verified. Please log in.');
+      }
+    }
+
+    const result = await callerService.verifyStoredOtp(
+      email,
+      cleanedOtp,
+      purpose,
+    );
     if (!result.ok) {
       return fail(res, result.message);
     }
@@ -60,7 +76,7 @@ async function verifyOtp(req, res) {
     if (purpose === 'forgot-password') {
       return ok(
         res,
-        {email, verified: true},
+        {email: String(email).toLowerCase(), verified: true},
         'OTP verified successfully',
       );
     }
@@ -110,6 +126,44 @@ async function forgotPassword(req, res) {
     );
   } catch (error) {
     return fail(res, error.message || 'Failed to send OTP.');
+  }
+}
+
+async function resendOtp(req, res) {
+  try {
+    const {email, flow} = req.body || {};
+    if (!isValidEmail(email)) {
+      return fail(res, 'Please enter a valid email address.');
+    }
+
+    const purpose =
+      flow === 'forgot-password' ? 'forgot-password' : 'signup';
+    const user = await callerService.findUserByEmail(email);
+
+    if (purpose === 'signup') {
+      if (!user) {
+        return fail(res, 'No pending signup found for this email. Please register first.');
+      }
+      if (user.isVerified) {
+        return fail(res, 'Account already verified. Please log in.');
+      }
+    } else if (!user) {
+      return ok(res, {email}, 'If an account exists, OTP has been sent.');
+    }
+
+    const otpInfo = await callerService.saveOtp(email, purpose);
+    return ok(
+      res,
+      {
+        email: String(email).toLowerCase(),
+        otpExpiresInMinutes: otpInfo.otpExpiresInMinutes,
+        emailSent: otpInfo.emailSent,
+        ...(otpInfo.otp ? {debugOtp: otpInfo.otp} : {}),
+      },
+      otpInfo.emailSent ? 'OTP sent successfully' : 'OTP generated (check server logs)',
+    );
+  } catch (error) {
+    return fail(res, error.message || 'Failed to resend OTP.');
   }
 }
 
@@ -336,8 +390,16 @@ async function walletTransactions(req, res) {
       req.auth.userId,
       {limit},
     );
-    return ok(res, data, 'Wallet transactions fetched');
+    return ok(
+      res,
+      {
+        transactions: data.transactions || [],
+        total: Number(data.total) || 0,
+      },
+      'Wallet transactions fetched',
+    );
   } catch (error) {
+    console.error('[caller.walletTransactions]', error);
     return fail(res, error.message || 'Failed to fetch wallet transactions.', 500);
   }
 }
@@ -618,6 +680,7 @@ module.exports = {
   signup,
   verifyOtp,
   forgotPassword,
+  resendOtp,
   createNewPassword,
   login,
   getUser,
