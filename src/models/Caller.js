@@ -60,6 +60,9 @@ const callerSchema = new mongoose.Schema(
 
     /** Admin moderation — blocked callers cannot login or chat. */
     isBlocked: {type: Boolean, default: false, index: true},
+    /** Soft moderation — suspended callers cannot login until reactivated. */
+    isSuspended: {type: Boolean, default: false, index: true},
+    moderationReason: {type: String, default: ''},
 
     /** Last chat/socket presence ping — used for Online indicators. */
     chatLastSeenAt: {type: Date, default: null, index: true},

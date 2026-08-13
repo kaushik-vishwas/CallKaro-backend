@@ -490,6 +490,124 @@ async function resetAgentPassword(id, newPassword) {
   return {ok: true, temporaryPassword: password};
 }
 
+async function getCommissionLedger(
+  agentId,
+  {page = 1, limit = 20, dateFrom, dateTo} = {},
+) {
+  const agent = await Agent.findOne({id: agentId}).lean();
+  if (!agent) return {ok: false, message: 'Agent not found.'};
+
+  const receivers = await Receiver.find({agentId})
+    .select('id name')
+    .lean();
+  const receiverIds = receivers.map(r => r.id);
+  const nameMap = new Map(receivers.map(r => [r.id, r.name]));
+
+  if (!receiverIds.length) {
+    return {
+      ok: true,
+      ledger: [],
+      pagination: {
+        page: 1,
+        limit: Number(limit) || 20,
+        total: 0,
+        totalPages: 1,
+      },
+      summary: {
+        totalCommission: 0,
+        totalCommissionLabel: formatInrCompact(0),
+        entries: 0,
+      },
+    };
+  }
+
+  const EarningLedger = require('../models/EarningLedger');
+  const filter = {
+    receiverId: {$in: receiverIds},
+    source: {$ne: 'withdrawal'},
+  };
+
+  if (dateFrom || dateTo) {
+    filter.createdAt = {};
+    if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+    if (dateTo) {
+      const end = new Date(dateTo);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+
+  const pageNum = Math.max(1, Number(page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(limit) || 20));
+  const skip = (pageNum - 1) * pageSize;
+
+  const [total, rows, sumAgg] = await Promise.all([
+    EarningLedger.countDocuments(filter),
+    EarningLedger.find(filter)
+      .sort({createdAt: -1})
+      .skip(skip)
+      .limit(pageSize)
+      .lean(),
+    EarningLedger.aggregate([
+      {$match: filter},
+      {
+        $group: {
+          _id: null,
+          total: {$sum: {$ifNull: ['$amountInr', 0]}},
+        },
+      },
+    ]),
+  ]);
+
+  const earningsTotal = Number(sumAgg[0]?.total) || 0;
+  const totalCommission = Math.round(earningsTotal * COMMISSION_RATE);
+
+  const ledger = rows.map(row => {
+    const amountInr = Number(row.amountInr) || 0;
+    const commission = Math.round(amountInr * COMMISSION_RATE);
+    return {
+      id: row.id,
+      date: formatDateLabel(row.createdAt),
+      dateIso: row.createdAt
+        ? new Date(row.createdAt).toISOString()
+        : null,
+      receiverId: row.receiverId,
+      receiverName: nameMap.get(row.receiverId) || row.receiverId,
+      source: row.source,
+      sourceLabel:
+        row.source === 'video_call'
+          ? 'Video Call'
+          : row.source === 'gift'
+            ? 'Gift'
+            : row.source === 'chat'
+              ? 'Chat'
+              : row.source === 'adjustment'
+                ? 'Adjustment'
+                : String(row.source || 'Earning'),
+      receiverEarnings: amountInr,
+      commission,
+      coins: Number(row.coins) || 0,
+      referenceId: row.referenceId || '',
+    };
+  });
+
+  return {
+    ok: true,
+    ledger,
+    pagination: {
+      page: pageNum,
+      limit: pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    },
+    summary: {
+      totalCommission,
+      totalCommissionLabel: formatInrCompact(totalCommission),
+      entries: total,
+    },
+  };
+}
+
 module.exports = {
   listAgents,
   getAgentStats,
@@ -497,4 +615,5 @@ module.exports = {
   getAgentDetail,
   updateAgent,
   resetAgentPassword,
+  getCommissionLedger,
 };

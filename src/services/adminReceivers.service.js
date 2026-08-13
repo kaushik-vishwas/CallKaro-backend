@@ -1,5 +1,6 @@
 const Receiver = require('../models/Receiver');
 const Agent = require('../models/Agent');
+const Withdrawal = require('../models/Withdrawal');
 const storageService = require('./storage.service');
 
 const COMMISSION_RATE = 0.4;
@@ -294,6 +295,35 @@ async function buildKycPayload(receiver) {
   };
 }
 
+function mapWithdrawalUiStatus(status) {
+  if (status === 'paid') return 'paid';
+  if (status === 'failed' || status === 'cancelled') return 'failed';
+  return 'pending';
+}
+
+async function listReceiverWithdrawals(receiverId, {limit = 20} = {}) {
+  const rows = await Withdrawal.find({receiverId})
+    .sort({createdAt: -1})
+    .limit(Math.min(50, Math.max(1, Number(limit) || 20)))
+    .lean();
+
+  return rows.map(row => ({
+    id: row.id,
+    date: formatDateLabel(row.createdAt),
+    amount: Number(row.amountInr) || 0,
+    status: mapWithdrawalUiStatus(row.status),
+    settlement: row.utr
+      ? `UTR ${row.utr}`
+      : row.status === 'paid'
+        ? 'Settled'
+        : row.status === 'pending_review'
+          ? 'Under review'
+          : row.status === 'otp_pending'
+            ? 'OTP pending'
+            : row.failureReason || '—',
+  }));
+}
+
 async function getReceiverDetail(id) {
   const receiver = await Receiver.findOne({id}).lean();
   if (!receiver) return {ok: false, message: 'Receiver not found.'};
@@ -313,8 +343,25 @@ async function getReceiverDetail(id) {
   const agent = agentsMap.get(receiver.agentId);
   const listItem = toListItem(receiver, agent, rank, topPerformer);
   const money = moneyFromEarnings(receiver.earnings);
-  const availableBalance = Math.round(money.earnings * 0.34);
-  const withdrawnAmount = Math.round(money.earnings * 0.66);
+
+  const [withdrawals, paidAgg] = await Promise.all([
+    listReceiverWithdrawals(receiver.id, {limit: 20}),
+    Withdrawal.aggregate([
+      {
+        $match: {
+          receiverId: receiver.id,
+          status: 'paid',
+        },
+      },
+      {$group: {_id: null, total: {$sum: {$ifNull: ['$amountInr', 0]}}}},
+    ]),
+  ]);
+
+  const withdrawnAmount = Number(paidAgg?.[0]?.total) || 0;
+  const availableBalance =
+    typeof receiver.walletBalance === 'number'
+      ? Number(receiver.walletBalance) || 0
+      : Math.max(0, Math.round(money.earnings - withdrawnAmount));
 
   const months = [];
   for (let i = 5; i >= 0; i -= 1) {
@@ -341,23 +388,25 @@ async function getReceiverDetail(id) {
   }));
 
   const kyc = await buildKycPayload(receiver);
+  const onlineHours = Number((Number(receiver.totalHours) || 0).toFixed(2));
 
   return {
     ok: true,
     receiver: {
       ...listItem,
+      age: receiver.age || 0,
+      level: receiver.level || 1,
+      bio: receiver.bio || '',
       availableBalance,
       withdrawnAmount,
       performance: {
-        // Soft placeholders from available metrics
         callsThisMonth: Math.round((receiver.totalCalls || 0) * 0.14),
         completed: Math.round((receiver.totalCalls || 0) * 0.85),
         missed: Math.round((receiver.totalCalls || 0) * 0.1),
-        onlineHours: receiver.totalHours || 0,
+        onlineHours,
       },
       revenueTrend,
-      // Withdrawals / compliance not modeled
-      withdrawals: [],
+      withdrawals,
       compliance: {
         warnings: 0,
         violations: 0,
@@ -367,6 +416,84 @@ async function getReceiverDetail(id) {
       kyc,
     },
   };
+}
+
+async function updateReceiverProfile(id, payload = {}) {
+  const receiver = await Receiver.findOne({id});
+  if (!receiver) return {ok: false, message: 'Receiver not found.'};
+
+  if (payload.name !== undefined) {
+    const name = String(payload.name || '').trim();
+    if (!name) return {ok: false, message: 'Name is required.'};
+    receiver.name = name;
+  }
+
+  if (payload.email !== undefined || payload.loginEmail !== undefined) {
+    const email = String(payload.email || payload.loginEmail || '')
+      .trim()
+      .toLowerCase();
+    receiver.loginEmail = email;
+  }
+
+  if (payload.age !== undefined) {
+    const age = Number(payload.age);
+    if (!Number.isFinite(age) || age < 18 || age > 80) {
+      return {ok: false, message: 'Age must be between 18 and 80.'};
+    }
+    receiver.age = age;
+  }
+
+  if (payload.gender !== undefined) {
+    const gender = String(payload.gender || '').toLowerCase();
+    if (!['male', 'female', 'other'].includes(gender)) {
+      return {ok: false, message: 'Invalid gender.'};
+    }
+    receiver.gender = gender;
+  }
+
+  if (payload.level !== undefined) {
+    const level = Number(payload.level);
+    if (![1, 2, 3].includes(level)) {
+      return {ok: false, message: 'Level must be 1, 2, or 3.'};
+    }
+    receiver.level = level;
+  }
+
+  if (payload.bio !== undefined) {
+    receiver.bio = String(payload.bio || '').trim();
+  }
+
+  if (payload.languages !== undefined) {
+    const langs = Array.isArray(payload.languages)
+      ? payload.languages
+      : String(payload.languages || '')
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+    receiver.languages = langs;
+  }
+
+  await receiver.save();
+  return getReceiverDetail(receiver.id);
+}
+
+async function assignReceiverAgent(id, agentId) {
+  const nextAgentId = String(agentId || '').trim();
+  if (!nextAgentId) return {ok: false, message: 'Agent is required.'};
+
+  const [receiver, agent] = await Promise.all([
+    Receiver.findOne({id}),
+    Agent.findOne({id: nextAgentId}),
+  ]);
+  if (!receiver) return {ok: false, message: 'Receiver not found.'};
+  if (!agent) return {ok: false, message: 'Agent not found.'};
+  if (agent.isActive === false) {
+    return {ok: false, message: 'Only active agents can be assigned.'};
+  }
+
+  receiver.agentId = agent.id;
+  await receiver.save();
+  return getReceiverDetail(receiver.id);
 }
 
 async function updateReceiverStatus(id, action, reasonText = '') {
@@ -526,6 +653,8 @@ module.exports = {
   getReceiverStats,
   getReceiverDetail,
   updateReceiverStatus,
+  updateReceiverProfile,
+  assignReceiverAgent,
   listPendingReceivers,
   approveReceiver,
   rejectReceiver,

@@ -22,6 +22,9 @@ function publicAdmin(admin) {
     name: admin.name,
     phone: admin.phone || '',
     avatarUrl: admin.avatarUrl || '',
+    role: 'Super Admin',
+    status: admin.isActive === false ? 'Inactive' : 'Active',
+    twoFactorEnabled: admin.twoFactorEnabled !== false,
   };
 }
 
@@ -155,6 +158,9 @@ async function verifyLoginOtp(challengeToken, otp) {
   const otpResult = await verifyAdminOtp(admin.email, otp, 'admin-login');
   if (!otpResult.ok) return otpResult;
 
+  admin.lastLoginAt = new Date();
+  await admin.save();
+
   const token = signToken(admin, {role: 'admin'});
   return {ok: true, token, admin};
 }
@@ -214,6 +220,7 @@ async function resetPassword({email, otp, newPassword}) {
   }
 
   admin.passwordHash = await bcrypt.hash(String(newPassword), 10);
+  admin.passwordChangedAt = new Date();
   await admin.save();
   return {ok: true};
 }
@@ -222,6 +229,8 @@ module.exports = {
   publicAdmin,
   findAdminByEmail,
   findAdminById,
+  saveAdminOtp,
+  verifyAdminOtp,
   login,
   verifyLoginOtp,
   resendLoginOtp,

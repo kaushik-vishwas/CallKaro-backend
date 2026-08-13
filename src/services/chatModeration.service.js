@@ -187,6 +187,17 @@ async function reportUser(auth, {conversationId, reason, details}) {
     conversationId: conversation.id,
     reason: cleanedReason,
     details: String(details || '').trim().slice(0, 2000),
+    source: 'chat',
+    detectionType: cleanedReason,
+    caseCode: `CASE-${require('crypto').randomBytes(2).toString('hex').toUpperCase()}`,
+    timeline: [
+      {
+        id: `TL-${require('crypto').randomBytes(3).toString('hex')}`,
+        title: 'Case created from chat report',
+        actor: 'System',
+        at: new Date(),
+      },
+    ],
   });
 
   return {

@@ -9,6 +9,7 @@ router.post('/login', agentController.login);
 router.get('/me', agentAuthRequired, agentController.me);
 router.patch('/profile', agentAuthRequired, agentController.updateProfile);
 router.post('/update-password', agentAuthRequired, agentController.updatePassword);
+router.get('/analytics', agentAuthRequired, agentController.analytics);
 
 router.get('/receivers/stats', agentAuthRequired, agentController.receiverStats);
 router.get(

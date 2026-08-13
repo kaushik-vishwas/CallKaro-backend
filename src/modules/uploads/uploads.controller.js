@@ -19,6 +19,7 @@ async function uploadPhoto(req, res) {
       {
         url: result.url,
         key: result.key,
+        storageUrl: result.storageUrl,
         size: result.size,
       },
       'Photo uploaded',

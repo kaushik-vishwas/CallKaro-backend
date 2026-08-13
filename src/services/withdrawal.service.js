@@ -457,14 +457,10 @@ async function verifyWithdrawalOtp(receiverId, withdrawalId, otp) {
     },
   }).catch(() => undefined);
 
-  const utr = `CK${Date.now().toString().slice(-10)}${Math.floor(
-    Math.random() * 90 + 10,
-  )}`;
-  withdrawal.status = 'paid';
-  withdrawal.utr = utr;
-  withdrawal.paidAt = new Date();
+  withdrawal.status = 'pending_review';
   withdrawal.walletBalanceAfter = receiver.walletBalance;
   withdrawal.otpHash = '';
+  withdrawal.otpExpiresAt = null;
   await withdrawal.save();
 
   try {
@@ -473,21 +469,9 @@ async function verifyWithdrawalOtp(receiverId, withdrawalId, otp) {
       receiverId,
       type: 'withdraw_under_review',
       title: 'Withdrawal under review',
-      body: `Your withdrawal of ₹${withdrawal.amountInr.toLocaleString('en-IN')} is being processed.`,
+      body: `Your withdrawal of ₹${withdrawal.amountInr.toLocaleString('en-IN')} is being reviewed by admin.`,
       data: {amountInr: withdrawal.amountInr, withdrawalId: withdrawal.id},
       dedupeMinutes: 2,
-    });
-    await notificationService.createForReceiver({
-      receiverId,
-      type: 'withdraw_success',
-      title: 'Withdrawal successful',
-      body: `₹${withdrawal.netInr.toLocaleString('en-IN')} was transferred to ${withdrawal.bankSnapshot?.bankName || 'your bank'} ${withdrawal.bankSnapshot?.accountMasked || ''}.`,
-      data: {
-        amountInr: withdrawal.netInr,
-        requestedInr: withdrawal.amountInr,
-        withdrawalId: withdrawal.id,
-        utr,
-      },
     });
   } catch {
     /* optional */

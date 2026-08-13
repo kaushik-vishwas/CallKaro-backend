@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const WITHDRAWAL_STATUSES = [
   'otp_pending',
   'pending_review',
+  'approved',
   'paid',
   'failed',
   'cancelled',

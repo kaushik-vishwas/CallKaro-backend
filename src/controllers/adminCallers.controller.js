@@ -59,9 +59,32 @@ async function resetCallerPassword(req, res) {
   }
 }
 
+async function updateCaller(req, res) {
+  try {
+    const {action, reason} = req.body || {};
+    const result = await adminCallersService.updateCallerStatus(
+      req.params.id,
+      action,
+      reason,
+    );
+    if (!result.ok) {
+      return fail(
+        res,
+        result.message,
+        result.message === 'Caller not found.' ? 404 : 400,
+      );
+    }
+    return ok(res, {caller: result.caller}, 'Caller updated');
+  } catch (error) {
+    console.error('[admin.updateCaller]', error);
+    return fail(res, 'Failed to update caller.', 500);
+  }
+}
+
 module.exports = {
   listCallers,
   callerStats,
   getCaller,
   resetCallerPassword,
+  updateCaller,
 };

@@ -111,6 +111,31 @@ async function resetAgentPassword(req, res) {
   }
 }
 
+async function commissionLedger(req, res) {
+  try {
+    const {page, limit, dateFrom, dateTo} = req.query || {};
+    const result = await adminAgentsService.getCommissionLedger(req.params.id, {
+      page,
+      limit,
+      dateFrom,
+      dateTo,
+    });
+    if (!result.ok) return fail(res, result.message, 404);
+    return ok(
+      res,
+      {
+        ledger: result.ledger,
+        pagination: result.pagination,
+        summary: result.summary,
+      },
+      'Commission ledger fetched',
+    );
+  } catch (error) {
+    console.error('[admin.commissionLedger]', error);
+    return fail(res, 'Failed to fetch commission ledger.', 500);
+  }
+}
+
 module.exports = {
   listAgents,
   agentStats,
@@ -118,4 +143,5 @@ module.exports = {
   getAgent,
   updateAgent,
   resetAgentPassword,
+  commissionLedger,
 };

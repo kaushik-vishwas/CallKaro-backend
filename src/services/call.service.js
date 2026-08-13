@@ -1337,6 +1337,18 @@ async function submitIdentityFeedback(auth, callId, body = {}) {
   call.markModified('identityFeedback');
   await call.save();
 
+  if (matched === false) {
+    try {
+      const adminCompliance = require('./adminCompliance.service');
+      await adminCompliance.createIdentityMismatchReport(call, {
+        reasons,
+        otherText,
+      });
+    } catch (err) {
+      console.error('[call.identityMismatchReport]', err.message || err);
+    }
+  }
+
   return publicCallHydrated(call);
 }
 

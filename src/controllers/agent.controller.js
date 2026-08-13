@@ -17,7 +17,7 @@ async function login(req, res) {
       res,
       {
         token,
-        agent: agentService.publicAgent(result.agent),
+        agent: await agentService.publicAgentHydrated(result.agent),
       },
       'Login successful',
     );
@@ -31,7 +31,11 @@ async function me(req, res) {
   try {
     const agent = await agentService.findAgentById(req.auth.agentId);
     if (!agent) return fail(res, 'Agent not found.', 404);
-    return ok(res, {agent: agentService.publicAgent(agent)}, 'Agent fetched');
+    return ok(
+      res,
+      {agent: await agentService.publicAgentHydrated(agent)},
+      'Agent fetched',
+    );
   } catch (error) {
     console.error('[agent.me]', error);
     return fail(res, 'Failed to fetch agent.', 500);
@@ -44,7 +48,7 @@ async function updateProfile(req, res) {
     if (!agent) return fail(res, 'Agent not found.', 404);
     return ok(
       res,
-      {agent: agentService.publicAgent(agent)},
+      {agent: await agentService.publicAgentHydrated(agent)},
       'Profile updated',
     );
   } catch (error) {
@@ -135,6 +139,16 @@ async function receiverStats(req, res) {
   }
 }
 
+async function analytics(req, res) {
+  try {
+    const data = await agentService.getAgentAnalytics(req.auth.agentId);
+    return ok(res, {analytics: data}, 'Analytics fetched');
+  } catch (error) {
+    console.error('[agent.analytics]', error);
+    return fail(res, 'Failed to fetch analytics.', 500);
+  }
+}
+
 async function getReceiver(req, res) {
   try {
     const receiver = await agentService.getReceiverForAgent(
@@ -207,6 +221,7 @@ module.exports = {
   listReceivers,
   listPendingApprovals,
   receiverStats,
+  analytics,
   getReceiver,
   getCredentials,
   listCredentials,

@@ -531,6 +531,12 @@ async function validateLogin(email, password) {
       message: 'Your account has been blocked. Contact support.',
     };
   }
+  if (caller.isSuspended) {
+    return {
+      ok: false,
+      message: 'Your account has been suspended. Contact support.',
+    };
+  }
   const match = await bcrypt.compare(password, caller.passwordHash);
   if (!match) {
     return {ok: false, message: 'Invalid email or password.'};

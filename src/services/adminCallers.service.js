@@ -75,6 +75,7 @@ function isVipActive(caller, now = new Date()) {
 
 function callerStatus(caller) {
   if (caller.isBlocked) return 'blocked';
+  if (caller.isSuspended) return 'suspended';
   return 'active';
 }
 
@@ -228,10 +229,14 @@ async function listCallers({
   const tabKey = String(tab || 'all').toLowerCase();
   if (tabKey === 'vip') {
     Object.assign(filter, activeVipFilter(now));
-  } else if (tabKey === 'blocked' || tabKey === 'suspended') {
+  } else if (tabKey === 'blocked') {
     filter.isBlocked = true;
+  } else if (tabKey === 'suspended') {
+    filter.isSuspended = true;
+    filter.isBlocked = {$ne: true};
   } else if (tabKey === 'active') {
     filter.isBlocked = {$ne: true};
+    filter.isSuspended = {$ne: true};
   }
 
   const total = await Caller.countDocuments(filter);
@@ -272,30 +277,42 @@ async function listCallers({
 
 async function getCallerStats() {
   const now = new Date();
-  const [totalCallers, vipCallers, blockedCallers, orderAgg, recentActive] =
-    await Promise.all([
-      Caller.countDocuments(),
-      Caller.countDocuments(activeVipFilter(now)),
-      Caller.countDocuments({isBlocked: true}),
-      Order.aggregate([
-        {$match: {status: 'paid'}},
-        {
-          $group: {
-            _id: null,
-            totalRevenue: {$sum: {$ifNull: ['$amount', 0]}},
-          },
+  const [
+    totalCallers,
+    vipCallers,
+    blockedCallers,
+    suspendedCallers,
+    orderAgg,
+    recentActive,
+  ] = await Promise.all([
+    Caller.countDocuments(),
+    Caller.countDocuments(activeVipFilter(now)),
+    Caller.countDocuments({isBlocked: true}),
+    Caller.countDocuments({isSuspended: true, isBlocked: {$ne: true}}),
+    Order.aggregate([
+      {$match: {status: 'paid'}},
+      {
+        $group: {
+          _id: null,
+          totalRevenue: {$sum: {$ifNull: ['$amount', 0]}},
         },
-      ]),
-      Caller.countDocuments({
-        updatedAt: {$gte: new Date(Date.now() - 24 * 60 * 60 * 1000)},
-      }),
-    ]);
+      },
+    ]),
+    Caller.countDocuments({
+      updatedAt: {$gte: new Date(Date.now() - 24 * 60 * 60 * 1000)},
+      isBlocked: {$ne: true},
+      isSuspended: {$ne: true},
+    }),
+  ]);
 
   const totalRevenue = orderAgg[0]?.totalRevenue || 0;
   const avgRevenue = totalCallers
     ? Math.round(totalRevenue / totalCallers)
     : 0;
-  const activeCallers = Math.max(0, totalCallers - blockedCallers);
+  const activeCallers = Math.max(
+    0,
+    totalCallers - blockedCallers - suspendedCallers,
+  );
 
   return {
     totalUsers: totalCallers,
@@ -304,6 +321,7 @@ async function getCallerStats() {
     activeCallers,
     vipCallers,
     blockedCallers,
+    suspendedCallers,
     totalRevenue,
     avgRevenue,
     totalRevenueLabel: formatInrCompact(totalRevenue),
@@ -456,11 +474,40 @@ async function resetCallerPassword(id, newPassword) {
   return {ok: true, temporaryPassword: password};
 }
 
+async function updateCallerStatus(id, action, reasonText = '') {
+  const caller = await Caller.findOne({id});
+  if (!caller) return {ok: false, message: 'Caller not found.'};
+
+  const note = String(reasonText || '').trim();
+  const key = String(action || '').toLowerCase();
+
+  if (key === 'block') {
+    caller.isBlocked = true;
+    caller.isSuspended = false;
+    caller.moderationReason = note || caller.moderationReason || 'Blocked by admin';
+  } else if (key === 'suspend') {
+    caller.isSuspended = true;
+    caller.isBlocked = false;
+    caller.moderationReason =
+      note || caller.moderationReason || 'Suspended by admin';
+  } else if (key === 'activate' || key === 'unblock') {
+    caller.isBlocked = false;
+    caller.isSuspended = false;
+    caller.moderationReason = '';
+  } else {
+    return {ok: false, message: 'Invalid action.'};
+  }
+
+  await caller.save();
+  return getCallerDetail(caller.id);
+}
+
 module.exports = {
   listCallers,
   getCallerStats,
   getCallerDetail,
   resetCallerPassword,
+  updateCallerStatus,
   isVipActive,
   callerCode,
   formatDateLabel,

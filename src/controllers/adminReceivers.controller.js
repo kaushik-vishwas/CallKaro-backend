@@ -52,11 +52,28 @@ async function getReceiver(req, res) {
 
 async function updateReceiver(req, res) {
   try {
-    const {action, reason} = req.body || {};
-    const result = await adminReceiversService.updateReceiverStatus(
+    const body = req.body || {};
+    const {action, reason} = body;
+
+    if (action) {
+      const result = await adminReceiversService.updateReceiverStatus(
+        req.params.id,
+        action,
+        reason,
+      );
+      if (!result.ok) {
+        return fail(
+          res,
+          result.message,
+          result.message === 'Receiver not found.' ? 404 : 400,
+        );
+      }
+      return ok(res, {receiver: result.receiver}, 'Receiver updated');
+    }
+
+    const result = await adminReceiversService.updateReceiverProfile(
       req.params.id,
-      action,
-      reason,
+      body,
     );
     if (!result.ok) {
       return fail(
@@ -65,10 +82,34 @@ async function updateReceiver(req, res) {
         result.message === 'Receiver not found.' ? 404 : 400,
       );
     }
-    return ok(res, {receiver: result.receiver}, 'Receiver updated');
+    return ok(res, {receiver: result.receiver}, 'Receiver profile updated');
   } catch (error) {
     console.error('[admin.updateReceiver]', error);
     return fail(res, 'Failed to update receiver.', 500);
+  }
+}
+
+async function assignAgent(req, res) {
+  try {
+    const {agentId} = req.body || {};
+    const result = await adminReceiversService.assignReceiverAgent(
+      req.params.id,
+      agentId,
+    );
+    if (!result.ok) {
+      return fail(
+        res,
+        result.message,
+        result.message === 'Receiver not found.' ||
+          result.message === 'Agent not found.'
+          ? 404
+          : 400,
+      );
+    }
+    return ok(res, {receiver: result.receiver}, 'Agent assigned');
+  } catch (error) {
+    console.error('[admin.assignReceiverAgent]', error);
+    return fail(res, 'Failed to assign agent.', 500);
   }
 }
 
@@ -134,6 +175,7 @@ module.exports = {
   listPending,
   getReceiver,
   updateReceiver,
+  assignAgent,
   approveReceiver,
   rejectReceiver,
   requestChanges,

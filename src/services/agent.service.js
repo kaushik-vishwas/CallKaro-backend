@@ -26,6 +26,15 @@ function publicAgent(agent) {
   };
 }
 
+async function publicAgentHydrated(agent) {
+  const base = publicAgent(agent);
+  if (!base.avatarUrl) return base;
+  return {
+    ...base,
+    avatarUrl: await storageService.toAccessUrl(base.avatarUrl),
+  };
+}
+
 function formatSubmittedAgo(date) {
   if (!date) return '';
   const ms = Date.now() - new Date(date).getTime();
@@ -76,13 +85,14 @@ function generateLoginEmail(name, id) {
 }
 
 function publicReceiverListItem(receiver) {
+  const hours = Number(receiver.totalHours) || 0;
   return {
     id: receiver.id,
     name: receiver.name,
     level: receiver.level,
     status: STATUS_LABEL[receiver.status] || 'Inactive',
     statusKey: receiver.status,
-    totalHours: receiver.totalHours || 0,
+    totalHours: Number(hours.toFixed(2)),
     earnings: receiver.earnings || 0,
   };
 }
@@ -169,7 +179,9 @@ async function updateProfile(agentId, {name, phone, avatarUrl}) {
   if (!agent) return null;
   if (typeof name === 'string' && name.trim()) agent.name = name.trim();
   if (typeof phone === 'string') agent.phone = phone.trim();
-  if (typeof avatarUrl === 'string') agent.avatarUrl = avatarUrl;
+  if (typeof avatarUrl === 'string') {
+    agent.avatarUrl = storageService.toStorageUrl(avatarUrl) || avatarUrl;
+  }
   await agent.save();
   return agent;
 }
@@ -403,8 +415,128 @@ async function submitForReview(agentId, receiverId, payload = {}) {
   return {ok: true, receiver};
 }
 
+async function getAgentAnalytics(agentId) {
+  const Call = require('../models/Call');
+  const receivers = await Receiver.find({agentId}).lean();
+  const receiverIds = receivers.map(r => r.id);
+
+  const total = receivers.length;
+  const pending = receivers.filter(r => r.status === 'pending_review').length;
+  const approved = receivers.filter(r => r.status === 'active').length;
+  const activeOnline = receivers.filter(
+    r => r.status === 'active' && r.isOnline,
+  ).length;
+  const totalCalls = receivers.reduce(
+    (sum, r) => sum + (Number(r.totalCalls) || 0),
+    0,
+  );
+  const callHours = receivers.reduce(
+    (sum, r) => sum + (Number(r.totalHours) || 0),
+    0,
+  );
+
+  const start = new Date();
+  start.setUTCDate(1);
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCMonth(start.getUTCMonth() - 11);
+
+  let monthlyMap = new Map();
+  if (receiverIds.length) {
+    const rows = await Call.aggregate([
+      {
+        $match: {
+          receiverId: {$in: receiverIds},
+          createdAt: {$gte: start},
+        },
+      },
+      {
+        $group: {
+          _id: {$dateToString: {format: '%Y-%m', date: '$createdAt'}},
+          value: {$sum: 1},
+        },
+      },
+    ]);
+    monthlyMap = new Map(rows.map(r => [r._id, Number(r.value) || 0]));
+
+    // Fallback: new receivers per month if no calls yet
+    if (![...monthlyMap.values()].some(v => v > 0)) {
+      const created = await Receiver.aggregate([
+        {$match: {agentId, createdAt: {$gte: start}}},
+        {
+          $group: {
+            _id: {$dateToString: {format: '%Y-%m', date: '$createdAt'}},
+            value: {$sum: 1},
+          },
+        },
+      ]);
+      monthlyMap = new Map(created.map(r => [r._id, Number(r.value) || 0]));
+    }
+  }
+
+  const monthlyTrend = [];
+  for (let i = 0; i < 12; i += 1) {
+    const d = new Date(start);
+    d.setUTCMonth(start.getUTCMonth() + i);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    monthlyTrend.push({
+      month: d.toLocaleString('en-US', {month: 'short'}),
+      value: monthlyMap.get(key) || 0,
+    });
+  }
+
+  const topPerformers = [...receivers]
+    .sort(
+      (a, b) =>
+        (Number(b.earnings) || 0) - (Number(a.earnings) || 0) ||
+        (Number(b.totalCalls) || 0) - (Number(a.totalCalls) || 0),
+    )
+    .slice(0, 10)
+    .map(publicReceiverListItem);
+
+  return {
+    stats: [
+      {
+        id: 'total',
+        label: 'Total Receivers',
+        value: total.toLocaleString('en-IN'),
+      },
+      {
+        id: 'pending',
+        label: 'Pending Profiles',
+        value: pending.toLocaleString('en-IN'),
+      },
+      {
+        id: 'approved',
+        label: 'Approved Receivers',
+        value: approved.toLocaleString('en-IN'),
+      },
+      {
+        id: 'active',
+        label: 'Online Now',
+        value: activeOnline.toLocaleString('en-IN'),
+      },
+      {
+        id: 'calls',
+        label: 'Total Calls',
+        value: totalCalls.toLocaleString('en-IN'),
+      },
+      {
+        id: 'hours',
+        label: 'Call Hours',
+        value: Number(callHours || 0).toLocaleString('en-IN', {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 2,
+        }),
+      },
+    ],
+    monthlyTrend,
+    topPerformers,
+  };
+}
+
 module.exports = {
   publicAgent,
+  publicAgentHydrated,
   publicReceiverListItem,
   publicReceiverProfile,
   publicPendingRow,
@@ -418,6 +550,7 @@ module.exports = {
   listPendingApprovals,
   getReceiverForAgent,
   getReceiverStats,
+  getAgentAnalytics,
   getCredentials,
   listCredentialReceivers,
   submitForReview,
