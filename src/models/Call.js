@@ -21,6 +21,9 @@ const END_REASONS = [
   'insufficient_coins',
   'timeout',
   'failed',
+  'stale',
+  'receiver_went_online',
+  'receiver_went_offline',
 ];
 
 const callSchema = new mongoose.Schema(
@@ -92,6 +95,13 @@ const callSchema = new mongoose.Schema(
       name: {type: String, default: 'Receiver'},
       avatarUrl: {type: String, default: ''},
       age: {type: Number, default: null},
+    },
+    identityFeedback: {
+      matched: {type: Boolean, default: null},
+      reasons: {type: [String], default: []},
+      otherText: {type: String, default: ''},
+      skipped: {type: Boolean, default: false},
+      submittedAt: {type: Date, default: null},
     },
   },
   {timestamps: true, collection: 'calls'},

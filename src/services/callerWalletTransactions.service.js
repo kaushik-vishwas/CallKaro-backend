@@ -1,8 +1,6 @@
 const Order = require('../models/Order');
 const Call = require('../models/Call');
 const Message = require('../models/Message');
-const DailyReward = require('../models/DailyReward');
-const config = require('../config');
 
 function toIso(value) {
   if (!value) return new Date().toISOString();
@@ -27,15 +25,16 @@ async function safeFind(label, fn) {
 }
 
 /**
- * Unified wallet activity for the authenticated caller:
- * paid recharges/VIP, video call spend, gifts, chat charges, daily check-ins.
+ * Wallet / payment activity for the authenticated caller:
+ * paid recharges & VIP, video call spend, gifts, and chat charges.
+ * Daily check-in rewardCoins are excluded — they are not wallet recharges.
  */
 async function listWalletTransactions(userId, {limit = 50} = {}) {
   const take = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const perSource = Math.max(take, 40);
   const uid = String(userId || '');
 
-  const [orders, calls, messages, daily] = await Promise.all([
+  const [orders, calls, messages] = await Promise.all([
     safeFind('orders', () =>
       Order.find({userId: uid, status: 'paid'})
         .sort({paidAt: -1, updatedAt: -1})
@@ -65,7 +64,6 @@ async function listWalletTransactions(userId, {limit = 50} = {}) {
         .limit(perSource)
         .lean(),
     ),
-    safeFind('daily', () => DailyReward.findOne({userId: uid}).lean()),
   ]);
 
   const items = [];
@@ -155,21 +153,6 @@ async function listWalletTransactions(userId, {limit = 50} = {}) {
       amountInr: null,
       direction: 'debit',
       createdAt: toIso(msg.createdAt),
-    });
-  }
-
-  const checkInCoins = Number(config.dailyCheckInCoins) || 1600;
-  for (const dateStr of (daily && daily.claimedDates) || []) {
-    if (!dateStr) continue;
-    items.push({
-      id: `checkin:${dateStr}`,
-      type: 'daily_checkin',
-      title: 'Daily Check-in',
-      subtitle: 'Reward coins',
-      coinsDelta: checkInCoins,
-      amountInr: null,
-      direction: 'credit',
-      createdAt: toIso(`${dateStr}T09:00:00.000Z`),
     });
   }
 

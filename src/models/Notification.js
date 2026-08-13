@@ -21,6 +21,14 @@ const NOTIFICATION_TYPES = [
   'withdraw_failed',
   'earnings_credit',
   'payment_received',
+  'gift_received',
+  'missed_call',
+  'admin_blocked',
+  'admin_suspended',
+  'admin_warned',
+  'admin_activated',
+  'level_up',
+  'milestone_reached',
 ];
 
 const notificationSchema = new mongoose.Schema(

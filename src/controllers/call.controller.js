@@ -189,6 +189,23 @@ async function sendGift(req, res) {
   }
 }
 
+async function identityFeedback(req, res) {
+  try {
+    const call = await callService.submitIdentityFeedback(
+      req.auth,
+      req.params.id,
+      req.body || {},
+    );
+    return ok(res, {call}, 'Feedback saved');
+  } catch (error) {
+    return fail(
+      res,
+      error.message || 'Failed to save feedback.',
+      error.statusCode || 500,
+    );
+  }
+}
+
 async function requestCallback(req, res) {
   try {
     const callQueueService = require('../services/callQueue.service');
@@ -268,6 +285,7 @@ module.exports = {
   active,
   giftCatalog,
   sendGift,
+  identityFeedback,
   requestCallback,
   cancelCallback,
   listQueue,

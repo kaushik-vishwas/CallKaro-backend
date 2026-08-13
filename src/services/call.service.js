@@ -6,6 +6,8 @@ const {getIo} = require('../realtime/io');
 const {GIFT_CATALOG, GIFT_CATEGORIES, getGiftById} = require('../constants/gifts');
 
 const RING_TIMEOUT_MS = 45_000;
+/** Connected calls with no heartbeat for this long are treated as abandoned. */
+const STALE_CONNECTED_MS = 90_000;
 const ACTIVE_STATUSES = ['ringing', 'accepted', 'connected'];
 const BASE_COIN_RATE = () => Number(config.rewardCoinsPerVideoMinute || 1600);
 
@@ -100,9 +102,35 @@ function publicCall(doc, {includeProvider = true, caller = null} = {}) {
   return payload;
 }
 
+/** Sign snapshot avatar keys so clients can render receiver/caller photos. */
+async function hydrateCallAvatars(payload) {
+  const storageService = require('./storage.service');
+  const receiverUrl = payload?.receiver?.avatarUrl || '';
+  const callerUrl = payload?.caller?.avatarUrl || '';
+  const [receiverAvatar, callerAvatar] = await storageService.mapAccessUrls([
+    receiverUrl,
+    callerUrl,
+  ]);
+  return {
+    ...payload,
+    caller: {
+      ...(payload.caller || {}),
+      avatarUrl: callerAvatar || callerUrl || '',
+    },
+    receiver: {
+      ...(payload.receiver || {}),
+      avatarUrl: receiverAvatar || receiverUrl || '',
+    },
+  };
+}
+
+async function publicCallHydrated(doc, opts = {}) {
+  return hydrateCallAvatars(publicCall(doc, opts));
+}
+
 async function attachCallerBalance(callDoc) {
   const caller = await Caller.findOne({id: callDoc.callerId}).lean();
-  return publicCall(callDoc, {caller});
+  return publicCallHydrated(callDoc, {caller});
 }
 
 function emitToParticipants(call, event, extra = {}) {
@@ -110,9 +138,40 @@ function emitToParticipants(call, event, extra = {}) {
   if (!io || !call) {
     return;
   }
-  const payload = {...publicCall(call), ...extra};
-  io.to(`caller:${call.callerId}`).emit(event, payload);
-  io.to(`receiver:${call.receiverId}`).emit(event, payload);
+  publicCallHydrated(call)
+    .then(hydrated => {
+      const payload = {...hydrated, ...extra};
+      io.to(`caller:${call.callerId}`).emit(event, payload);
+      io.to(`receiver:${call.receiverId}`).emit(event, payload);
+    })
+    .catch(() => {
+      const payload = {...publicCall(call), ...extra};
+      io.to(`caller:${call.callerId}`).emit(event, payload);
+      io.to(`receiver:${call.receiverId}`).emit(event, payload);
+    });
+}
+
+function scheduleQueueAfterReceiverFree(receiverId, call = null) {
+  try {
+    const callQueueService = require('./callQueue.service');
+    if (call?.providerPayload?.isCallback || call?.providerPayload?.queueId) {
+      callQueueService
+        .completeCallbackAttempt(call)
+        .catch(() => undefined);
+    } else {
+      callQueueService.scheduleProcessQueue(receiverId, 5_000);
+    }
+  } catch {
+    /* optional */
+  }
+  try {
+    const chatService = require('./chat.service');
+    chatService
+      .broadcastPresenceForUser('receiver', receiverId, true)
+      .catch(() => undefined);
+  } catch {
+    /* optional */
+  }
 }
 
 function clearRingTimer(callId) {
@@ -130,6 +189,214 @@ function scheduleRingTimeout(callId) {
     markMissed(callId).catch(() => undefined);
   }, RING_TIMEOUT_MS);
   ringTimers.set(callId, timer);
+}
+
+/**
+ * Force-close a stuck call so the receiver is not permanently "busy".
+ * Skips coin billing — these are abandoned sessions.
+ */
+async function forceCloseCall(call, endReason) {
+  if (!call || !ACTIVE_STATUSES.includes(call.status)) {
+    return call;
+  }
+  clearRingTimer(call.id);
+  const now = new Date();
+  const wasRinging = call.status === 'ringing';
+  if (wasRinging) {
+    call.status = 'missed';
+    call.endReason = endReason || 'missed';
+  } else {
+    if (call.connectedAt) {
+      call.durationSeconds = Math.max(
+        0,
+        Math.floor(
+          (now.getTime() - new Date(call.connectedAt).getTime()) / 1000,
+        ),
+      );
+    }
+    call.status = 'ended';
+    call.endReason = endReason || 'stale';
+  }
+  call.endedAt = now;
+  try {
+    await call.save();
+  } catch (err) {
+    // Fallback if an unexpected endReason fails schema validation.
+    call.endReason = wasRinging ? 'missed' : 'timeout';
+    await call.save();
+  }
+  if (wasRinging) {
+    emitToParticipants(call, 'call:missed');
+    try {
+      const notificationService = require('./notification.service');
+      const callerName = call.callerSnapshot?.name || 'A caller';
+      await notificationService.notifyReceiverMissedCall({
+        receiverId: call.receiverId,
+        callerName,
+        callId: call.id,
+        callerId: call.callerId,
+      });
+    } catch {
+      /* optional */
+    }
+  }
+  emitToParticipants(call, 'call:ended');
+  scheduleQueueAfterReceiverFree(call.receiverId, call);
+  return call;
+}
+async function sweepStaleActiveCalls({receiverId, callerId} = {}) {
+  const filter = {status: {$in: ACTIVE_STATUSES}};
+  if (receiverId) {
+    filter.receiverId = receiverId;
+  }
+  if (callerId) {
+    filter.callerId = callerId;
+  }
+  const rows = await Call.find(filter);
+  const now = Date.now();
+  let closed = 0;
+  for (const call of rows) {
+    if (call.status === 'ringing') {
+      const ringingAt = new Date(
+        call.ringingAt || call.createdAt || 0,
+      ).getTime();
+      if (now - ringingAt >= RING_TIMEOUT_MS) {
+        await forceCloseCall(call, 'missed');
+        closed += 1;
+      }
+      continue;
+    }
+    if (call.status === 'accepted') {
+      const acceptedAt = new Date(
+        call.acceptedAt || call.updatedAt || call.createdAt || 0,
+      ).getTime();
+      if (now - acceptedAt >= 60_000) {
+        await forceCloseCall(call, 'stale');
+        closed += 1;
+      }
+      continue;
+    }
+    if (call.status === 'connected') {
+      const hbSource =
+        call.lastHeartbeatAt || call.connectedAt || call.updatedAt;
+      const hbAt = new Date(hbSource || 0).getTime();
+      if (now - hbAt >= STALE_CONNECTED_MS) {
+        await forceCloseCall(call, 'stale');
+        closed += 1;
+      }
+    }
+  }
+  return closed;
+}
+
+/**
+ * Drop leftover active calls for a receiver so Busy cannot stick on discover.
+ * When force=true (going offline), close every active call including live ones.
+ */
+async function releaseReceiverForOnline(receiverId, {force = false} = {}) {
+  const rid = String(receiverId || '').trim();
+  if (!rid) {
+    return 0;
+  }
+  await sweepStaleActiveCalls({receiverId: rid});
+  const rows = await Call.find({
+    receiverId: rid,
+    status: {$in: ACTIVE_STATUSES},
+  });
+  const now = Date.now();
+  let closed = 0;
+  for (const call of rows) {
+    if (
+      !force &&
+      call.status === 'connected' &&
+      call.lastHeartbeatAt
+    ) {
+      const age = now - new Date(call.lastHeartbeatAt).getTime();
+      if (age < 30_000) {
+        continue;
+      }
+    }
+    await forceCloseCall(
+      call,
+      call.status === 'ringing'
+        ? 'missed'
+        : force
+          ? 'receiver_went_offline'
+          : 'receiver_went_online',
+    );
+    closed += 1;
+  }
+  return closed;
+}
+
+/**
+ * Receiver IDs that are truly on a live call right now.
+ * Runs a stale sweep first so abandoned rows cannot mark Busy forever.
+ */
+async function getBusyReceiverIds(receiverIds = []) {
+  const ids = Array.isArray(receiverIds)
+    ? receiverIds.map(id => String(id)).filter(Boolean)
+    : [];
+  if (!ids.length) {
+    return new Set();
+  }
+  await sweepStaleActiveCalls();
+  const rows = await Call.find({
+    receiverId: {$in: ids},
+    status: {$in: ACTIVE_STATUSES},
+  })
+    .select(
+      'id receiverId status ringingAt acceptedAt connectedAt lastHeartbeatAt createdAt updatedAt',
+    )
+    .lean();
+  const now = Date.now();
+  const busy = new Set();
+  for (const row of rows) {
+    const rid = String(row.receiverId || '');
+    if (!rid) {
+      continue;
+    }
+    if (row.status === 'ringing') {
+      const at = new Date(row.ringingAt || row.createdAt || 0).getTime();
+      if (now - at < RING_TIMEOUT_MS) {
+        busy.add(rid);
+      } else {
+        const doc = await Call.findOne({id: row.id});
+        if (doc) {
+          await forceCloseCall(doc, 'timeout');
+        }
+      }
+      continue;
+    }
+    if (row.status === 'accepted') {
+      const at = new Date(
+        row.acceptedAt || row.updatedAt || row.createdAt || 0,
+      ).getTime();
+      if (now - at < 60_000) {
+        busy.add(rid);
+      } else {
+        const doc = await Call.findOne({id: row.id});
+        if (doc) {
+          await forceCloseCall(doc, 'timeout');
+        }
+      }
+      continue;
+    }
+    if (row.status === 'connected') {
+      const at = new Date(
+        row.lastHeartbeatAt || row.connectedAt || row.updatedAt || 0,
+      ).getTime();
+      if (now - at < STALE_CONNECTED_MS) {
+        busy.add(rid);
+      } else {
+        const doc = await Call.findOne({id: row.id});
+        if (doc) {
+          await forceCloseCall(doc, 'timeout');
+        }
+      }
+    }
+  }
+  return busy;
 }
 
 async function assertCanAffordMinute(caller, coinRate) {
@@ -213,6 +480,18 @@ async function syncReceiverCallEarnings(call) {
   call.receiverEarningsInr =
     Number(call.receiverEarningsInr || 0) + Number(credit.amountInr || 0);
 
+  if (credit.ok && Number(credit.amountInr) > 0) {
+    const notificationService = require('./notification.service');
+    notificationService
+      .notifyReceiverEarnings({
+        receiverId: call.receiverId,
+        amountInr: credit.amountInr,
+        source: 'video_call',
+        callId: call.id,
+      })
+      .catch(() => undefined);
+  }
+
   return {
     ok: true,
     creditedCoins: delta,
@@ -221,6 +500,11 @@ async function syncReceiverCallEarnings(call) {
 }
 
 async function findActiveForUser(auth) {
+  if (auth.role === 'receiver') {
+    await sweepStaleActiveCalls({receiverId: auth.receiverId});
+  } else {
+    await sweepStaleActiveCalls({callerId: auth.userId});
+  }
   const filter =
     auth.role === 'receiver'
       ? {receiverId: auth.receiverId, status: {$in: ACTIVE_STATUSES}}
@@ -234,21 +518,45 @@ async function startCall(auth, receiverId) {
     err.statusCode = 403;
     throw err;
   }
-  const callerId = auth.userId;
-  const rid = String(receiverId || '').trim();
-  if (!rid) {
-    const err = new Error('receiverId is required.');
+  return createRingingCall(auth.userId, String(receiverId || '').trim(), {
+    fulfillQueue: true,
+  });
+}
+
+/**
+ * System/receiver-triggered callback: ring the next queued caller → receiver.
+ */
+async function createCallbackCall(callerId, receiverId, {queueId = null} = {}) {
+  return createRingingCall(String(callerId || '').trim(), String(receiverId || '').trim(), {
+    fulfillQueue: false,
+    isCallback: true,
+    queueId,
+  });
+}
+
+async function createRingingCall(
+  callerId,
+  rid,
+  {fulfillQueue = true, isCallback = false, queueId = null} = {},
+) {
+  if (!callerId || !rid) {
+    const err = new Error('callerId and receiverId are required.');
     err.statusCode = 400;
     throw err;
   }
 
-  const existing = await findActiveForUser(auth);
-  if (existing) {
-    const err = new Error('You already have an active call.');
+  const existingCaller = await Call.findOne({
+    callerId,
+    status: {$in: ACTIVE_STATUSES},
+  });
+  if (existingCaller) {
+    const err = new Error('Caller already has an active call.');
     err.statusCode = 409;
-    err.call = publicCall(existing);
+    err.call = publicCall(existingCaller);
     throw err;
   }
+
+  await sweepStaleActiveCalls({receiverId: rid});
 
   const receiverBusy = await Call.findOne({
     receiverId: rid,
@@ -270,6 +578,12 @@ async function startCall(auth, receiverId) {
     err.statusCode = 404;
     throw err;
   }
+  if (caller.isBlocked) {
+    const err = new Error('Caller is blocked.');
+    err.statusCode = 403;
+    err.code = 'caller_blocked';
+    throw err;
+  }
   if (!receiver) {
     const err = new Error('Receiver is not available.');
     err.statusCode = 404;
@@ -289,6 +603,15 @@ async function startCall(auth, receiverId) {
     throw err;
   }
   if (!receiver.isOnline) {
+    const err = new Error('Receiver is currently Offline');
+    err.statusCode = 409;
+    err.code = 'receiver_offline';
+    throw err;
+  }
+
+  const {getConnectedReceiverIds} = require('../realtime/io');
+  const connectedIds = getConnectedReceiverIds();
+  if (connectedIds instanceof Set && !connectedIds.has(rid)) {
     const err = new Error('Receiver is currently Offline');
     err.statusCode = 409;
     err.code = 'receiver_offline';
@@ -335,11 +658,22 @@ async function startCall(auth, receiverId) {
       'Not enough coins or free minutes to start a video call.',
     );
     err.statusCode = 402;
+    err.code = 'insufficient_coins';
     throw err;
   }
 
   const streamVideo = require('./streamVideo.service');
+  const storageService = require('./storage.service');
   const videoProvider = streamVideo.resolveVideoProvider();
+
+  const [receiverAvatar] = await storageService.mapAccessUrls(
+    Array.isArray(receiver.photos) && receiver.photos[0]
+      ? [receiver.photos[0]]
+      : [],
+  );
+  const [callerAvatar] = await storageService.mapAccessUrls(
+    caller.avatarUrl ? [caller.avatarUrl] : [],
+  );
 
   const call = await Call.create({
     callerId,
@@ -348,11 +682,13 @@ async function startCall(auth, receiverId) {
     provider: videoProvider,
     providerPayload: {
       mode: videoProvider,
+      isCallback: Boolean(isCallback),
+      queueId: queueId || null,
     },
     coinRatePerMinute: coinRate,
     callerSnapshot: {
       name: caller.name || 'Caller',
-      avatarUrl: caller.avatarUrl || '',
+      avatarUrl: callerAvatar || caller.avatarUrl || '',
       city: caller.city || caller.location || '',
       isVip: Boolean(
         caller.vipExpiresAt &&
@@ -361,27 +697,41 @@ async function startCall(auth, receiverId) {
     },
     receiverSnapshot: {
       name: receiver.name || 'Receiver',
-      avatarUrl: (receiver.photos && receiver.photos[0]) || '',
+      avatarUrl: receiverAvatar || '',
       age: receiver.age || null,
     },
   });
 
-  call.providerPayload = streamVideo.buildProviderPayload(call.id);
+  call.providerPayload = {
+    ...streamVideo.buildProviderPayload(call.id),
+    isCallback: Boolean(isCallback),
+    queueId: queueId || null,
+  };
   call.markModified('providerPayload');
   await call.save();
 
-  try {
-    const callQueueService = require('./callQueue.service');
-    await callQueueService.fulfillQueueEntry(callerId, rid);
-  } catch {
-    /* queue optional */
+  if (fulfillQueue) {
+    try {
+      const callQueueService = require('./callQueue.service');
+      await callQueueService.fulfillQueueEntry(callerId, rid);
+    } catch {
+      /* queue optional */
+    }
   }
 
-  emitToParticipants(call, 'call:incoming');
-  emitToParticipants(call, 'call:ringing');
+  emitToParticipants(call, 'call:incoming', {isCallback: Boolean(isCallback)});
+  emitToParticipants(call, 'call:ringing', {isCallback: Boolean(isCallback)});
   scheduleRingTimeout(call.id);
+  try {
+    const chatService = require('./chat.service');
+    chatService
+      .broadcastReceiverDiscoverStatus(rid, 'busy')
+      .catch(() => undefined);
+  } catch {
+    /* optional */
+  }
 
-  return publicCall(call, {caller});
+  return publicCallHydrated(call, {caller});
 }
 
 /**
@@ -403,6 +753,7 @@ async function startRandomCall(auth) {
   }
 
   const callerId = auth.userId;
+  await sweepStaleActiveCalls();
   const busyRows = await Call.find({status: {$in: ACTIVE_STATUSES}})
     .select('receiverId')
     .lean();
@@ -437,9 +788,15 @@ async function startRandomCall(auth) {
     .select('id photos')
     .lean();
 
+  const {getConnectedReceiverIds} = require('../realtime/io');
+  const connectedIds = getConnectedReceiverIds();
+
   const available = candidates.filter(row => {
     const id = String(row.id);
     if (busyIds.has(id) || blockedIds.has(id)) {
+      return false;
+    }
+    if (connectedIds instanceof Set && !connectedIds.has(id)) {
       return false;
     }
     const photos = Array.isArray(row.photos) ? row.photos : [];
@@ -493,17 +850,31 @@ async function startRandomCall(auth) {
 }
 
 async function acceptCall(auth, callId) {
-  if (auth.role !== 'receiver') {
-    const err = new Error('Only the receiver can accept.');
+  const isReceiver = auth.role === 'receiver';
+  const isCaller = auth.role === 'caller';
+  if (!isReceiver && !isCaller) {
+    const err = new Error('Only call participants can accept.');
     err.statusCode = 403;
     throw err;
   }
-  const call = await Call.findOne({id: callId, receiverId: auth.receiverId});
+
+  const filter = isReceiver
+    ? {id: callId, receiverId: auth.receiverId}
+    : {id: callId, callerId: auth.userId};
+  const call = await Call.findOne(filter);
   if (!call) {
     const err = new Error('Call not found.');
     err.statusCode = 404;
     throw err;
   }
+
+  // Callers may only accept auto-callback rings (receiver calling them back).
+  if (isCaller && !call.providerPayload?.isCallback) {
+    const err = new Error('Only the receiver can accept this call.');
+    err.statusCode = 403;
+    throw err;
+  }
+
   if (call.status !== 'ringing') {
     const err = new Error(`Call cannot be accepted from status ${call.status}.`);
     err.statusCode = 409;
@@ -539,21 +910,34 @@ async function acceptCall(auth, callId) {
 
   emitToParticipants(call, 'call:accepted');
   emitToParticipants(call, 'call:connected');
-  return publicCall(call, {caller});
+  return publicCallHydrated(call, {caller});
 }
 
 async function rejectCall(auth, callId) {
-  if (auth.role !== 'receiver') {
-    const err = new Error('Only the receiver can reject.');
+  const isReceiver = auth.role === 'receiver';
+  const isCaller = auth.role === 'caller';
+  if (!isReceiver && !isCaller) {
+    const err = new Error('Only call participants can reject.');
     err.statusCode = 403;
     throw err;
   }
-  const call = await Call.findOne({id: callId, receiverId: auth.receiverId});
+
+  const filter = isReceiver
+    ? {id: callId, receiverId: auth.receiverId}
+    : {id: callId, callerId: auth.userId};
+  const call = await Call.findOne(filter);
   if (!call) {
     const err = new Error('Call not found.');
     err.statusCode = 404;
     throw err;
   }
+
+  if (isCaller && !call.providerPayload?.isCallback) {
+    const err = new Error('Only the receiver can reject this call.');
+    err.statusCode = 403;
+    throw err;
+  }
+
   if (call.status !== 'ringing') {
     const err = new Error('Call is not ringing.');
     err.statusCode = 409;
@@ -567,7 +951,8 @@ async function rejectCall(auth, callId) {
   await call.save();
   emitToParticipants(call, 'call:rejected');
   emitToParticipants(call, 'call:ended');
-  return publicCall(call);
+  scheduleQueueAfterReceiverFree(call.receiverId, call);
+  return publicCallHydrated(call);
 }
 
 async function markMissed(callId) {
@@ -581,7 +966,23 @@ async function markMissed(callId) {
   await call.save();
   emitToParticipants(call, 'call:missed');
   emitToParticipants(call, 'call:ended');
-  return publicCall(call);
+  scheduleQueueAfterReceiverFree(call.receiverId, call);
+  try {
+    const notificationService = require('./notification.service');
+    const callerName =
+      call.callerSnapshot?.name ||
+      (await Caller.findOne({id: call.callerId}).select('name').lean())?.name ||
+      'A caller';
+    await notificationService.notifyReceiverMissedCall({
+      receiverId: call.receiverId,
+      callerName,
+      callId: call.id,
+      callerId: call.callerId,
+    });
+  } catch {
+    /* optional */
+  }
+  return publicCallHydrated(call);
 }
 
 async function endCall(auth, callId, reason) {
@@ -596,7 +997,7 @@ async function endCall(auth, callId, reason) {
     throw err;
   }
   if (!ACTIVE_STATUSES.includes(call.status) && call.status !== 'accepted') {
-    return publicCall(call);
+    return publicCallHydrated(call);
   }
 
   clearRingTimer(call.id);
@@ -638,10 +1039,26 @@ async function endCall(auth, callId, reason) {
   await call.save();
 
   if (call.connectedAt) {
+    const hoursAdded = Math.max(0, Number(call.durationSeconds) || 0) / 3600;
     await Receiver.updateOne(
       {id: call.receiverId},
-      {$inc: {totalCalls: 1}},
+      {$inc: {totalCalls: 1, totalHours: hoursAdded}},
     ).catch(() => undefined);
+    const updatedReceiver = await Receiver.findOne({id: call.receiverId});
+
+    if (updatedReceiver) {
+      const notificationService = require('./notification.service');
+      const receiverService = require('./receiver.service');
+      notificationService
+        .notifyReceiverCallMilestone({
+          receiverId: updatedReceiver.id,
+          totalCalls: updatedReceiver.totalCalls,
+        })
+        .catch(() => undefined);
+      receiverService
+        .maybeLevelUpReceiver(updatedReceiver)
+        .catch(() => undefined);
+    }
 
     const callerService = require('./caller.service');
     await callerService
@@ -653,6 +1070,7 @@ async function endCall(auth, callId, reason) {
   }
 
   emitToParticipants(call, 'call:ended');
+  scheduleQueueAfterReceiverFree(call.receiverId, call);
   return attachCallerBalance(call);
 }
 
@@ -668,7 +1086,7 @@ async function heartbeat(auth, callId) {
     throw err;
   }
   if (call.status !== 'connected' || !call.connectedAt) {
-    return publicCall(call);
+    return publicCallHydrated(call);
   }
 
   const now = new Date();
@@ -684,7 +1102,7 @@ async function heartbeat(auth, callId) {
   if (missing > 0) {
     const caller = await Caller.findOne({id: call.callerId});
     if (!caller) {
-      return publicCall(call);
+      return publicCallHydrated(call);
     }
     for (let i = 0; i < missing; i += 1) {
       const charged = chargeOneMinute(caller, call.coinRatePerMinute, call);
@@ -696,7 +1114,7 @@ async function heartbeat(auth, callId) {
         await caller.save();
         await call.save();
         emitToParticipants(call, 'call:ended', {forceEnd: true});
-        return publicCall(call);
+        return publicCallHydrated(call);
       }
     }
     await caller.save();
@@ -734,9 +1152,10 @@ async function listHistory(auth, {limit = 50} = {}) {
     .sort({createdAt: -1})
     .limit(Math.min(100, Math.max(1, Number(limit) || 50)))
     .lean();
-  return {
-    calls: rows.map(row => publicCall(row, {includeProvider: false})),
-  };
+  const calls = await Promise.all(
+    rows.map(row => publicCallHydrated(row, {includeProvider: false})),
+  );
+  return {calls};
 }
 
 async function getActive(auth) {
@@ -826,6 +1245,47 @@ async function sendGift(auth, callId, giftId) {
   await caller.save();
   await call.save();
 
+  // Credit receiver a share of gift coins (same purchase-rate INR conversion).
+  let giftAmountInr = 0;
+  try {
+    const earningsService = require('./earnings.service');
+    // Receiver earns half of gift coin value.
+    const shareCoins = Math.max(1, Math.round(cost * 0.5));
+    const credit = await earningsService.creditReceiverFromCoins({
+      receiverId: call.receiverId,
+      callerId: auth.userId,
+      coins: shareCoins,
+      source: 'gift',
+      referenceId: giftRow.id,
+      meta: {
+        callId: call.id,
+        giftId: gift.id,
+        giftName: gift.name,
+        giftCoins: cost,
+      },
+    });
+    giftAmountInr = Number(credit.amountInr || 0);
+    if (giftAmountInr > 0) {
+      call.receiverEarningsInr =
+        Number(call.receiverEarningsInr || 0) + giftAmountInr;
+      await call.save();
+    }
+    const notificationService = require('./notification.service');
+    notificationService
+      .notifyReceiverGift({
+        receiverId: call.receiverId,
+        giftName: gift.name,
+        emoji: gift.emoji,
+        amountInr: giftAmountInr,
+        coins: shareCoins,
+        callId: call.id,
+        callerName: caller.name || 'A caller',
+      })
+      .catch(() => undefined);
+  } catch (err) {
+    console.error('[gift.credit]', err.message || err);
+  }
+
   const payload = await attachCallerBalance(call);
   emitToParticipants(call, 'call:gift', {
     gift: giftRow,
@@ -837,9 +1297,53 @@ async function sendGift(auth, callId, giftId) {
   };
 }
 
+async function submitIdentityFeedback(auth, callId, body = {}) {
+  if (auth.role !== 'caller') {
+    const err = new Error('Only callers can submit identity feedback.');
+    err.statusCode = 403;
+    throw err;
+  }
+  const call = await Call.findOne({id: callId, callerId: auth.userId});
+  if (!call) {
+    const err = new Error('Call not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (call.status !== 'ended') {
+    const err = new Error('Feedback is only allowed after the call ends.');
+    err.statusCode = 409;
+    throw err;
+  }
+  if (Number(call.durationSeconds || 0) < 30) {
+    const err = new Error('Feedback requires at least 30 seconds of call time.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const skipped = Boolean(body.skipped);
+  const matched = skipped ? null : Boolean(body.matched);
+  const reasons = Array.isArray(body.reasons)
+    ? body.reasons.map(item => String(item)).filter(Boolean).slice(0, 8)
+    : [];
+  const otherText = String(body.otherText || '').trim().slice(0, 500);
+
+  call.identityFeedback = {
+    matched,
+    reasons: matched === false ? reasons : [],
+    otherText: matched === false ? otherText : '',
+    skipped,
+    submittedAt: new Date(),
+  };
+  call.markModified('identityFeedback');
+  await call.save();
+
+  return publicCallHydrated(call);
+}
+
 module.exports = {
   startCall,
   startRandomCall,
+  createCallbackCall,
   acceptCall,
   rejectCall,
   endCall,
@@ -851,4 +1355,8 @@ module.exports = {
   markMissed,
   listGiftCatalog,
   sendGift,
+  submitIdentityFeedback,
+  sweepStaleActiveCalls,
+  releaseReceiverForOnline,
+  getBusyReceiverIds,
 };

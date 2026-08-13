@@ -52,10 +52,11 @@ async function getReceiver(req, res) {
 
 async function updateReceiver(req, res) {
   try {
-    const {action} = req.body || {};
+    const {action, reason} = req.body || {};
     const result = await adminReceiversService.updateReceiverStatus(
       req.params.id,
       action,
+      reason,
     );
     if (!result.ok) {
       return fail(

@@ -143,7 +143,8 @@ async function createTicket(owner, payload = {}) {
     mobile,
     email,
     attachments,
-    status: 'in_review',
+    // New tickets start as open so they appear under admin "Open" filter.
+    status: 'open',
   });
 
   return {ok: true, ticket: publicTicket(ticket)};
@@ -239,14 +240,18 @@ async function adminListTickets({
 } = {}) {
   const filter = {};
   const roleKey = String(role || 'all').toLowerCase();
+  // Prefer $type string — $nin:[null,''] is unreliable for null/missing fields.
   if (roleKey === 'caller') {
-    filter.callerId = {$nin: [null, '']};
+    filter.callerId = {$type: 'string', $ne: ''};
   } else if (roleKey === 'receiver') {
-    filter.receiverId = {$nin: [null, '']};
+    filter.receiverId = {$type: 'string', $ne: ''};
   }
 
   const statusKey = String(status || 'all').toLowerCase();
-  if (ADMIN_STATUSES.includes(statusKey)) {
+  if (statusKey === 'open') {
+    // Treat "Open" as open + in_review (legacy tickets used in_review on create).
+    filter.status = {$in: ['open', 'in_review']};
+  } else if (ADMIN_STATUSES.includes(statusKey)) {
     filter.status = statusKey;
   }
 
@@ -271,6 +276,23 @@ async function adminListTickets({
   const search = String(q || '').trim();
   if (search) {
     const rx = new RegExp(escapeRegex(search), 'i');
+    const [matchedCallers, matchedReceivers] = await Promise.all([
+      Caller.find({
+        $or: [{name: rx}, {email: rx}, {phone: rx}, {id: rx}],
+      })
+        .select('id')
+        .limit(50)
+        .lean(),
+      Receiver.find({
+        $or: [{name: rx}, {phone: rx}, {id: rx}],
+      })
+        .select('id')
+        .limit(50)
+        .lean(),
+    ]);
+    const callerIds = matchedCallers.map(c => c.id);
+    const receiverIds = matchedReceivers.map(r => r.id);
+
     filter.$or = [
       {id: rx},
       {subject: rx},
@@ -280,6 +302,8 @@ async function adminListTickets({
       {mobile: rx},
       {callerId: rx},
       {receiverId: rx},
+      ...(callerIds.length ? [{callerId: {$in: callerIds}}] : []),
+      ...(receiverIds.length ? [{receiverId: {$in: receiverIds}}] : []),
     ];
   }
 

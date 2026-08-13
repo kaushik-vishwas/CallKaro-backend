@@ -260,9 +260,30 @@ function getVipSnapshot(caller, now = new Date()) {
   };
 }
 
+/** Caller level ladder: 5000 recharged coins per level (Figma My Level chart). */
+const CALLER_COINS_PER_LEVEL = 5000;
+const CALLER_MAX_LEVEL = 10;
+
+function getCallerLevelSnapshot(caller) {
+  const lifetime = Math.max(0, Number(caller.lifetimeRechargedCoins || 0));
+  const rawLevel = Math.floor(lifetime / CALLER_COINS_PER_LEVEL) + 1;
+  const level = Math.min(CALLER_MAX_LEVEL, Math.max(1, rawLevel));
+  const intoLevel = lifetime % CALLER_COINS_PER_LEVEL;
+  const isMax = level >= CALLER_MAX_LEVEL;
+  const levelProgress = isMax ? 1 : intoLevel / CALLER_COINS_PER_LEVEL;
+  const coinsToNext = isMax ? 0 : CALLER_COINS_PER_LEVEL - intoLevel;
+  return {
+    level,
+    levelProgress: Math.round(levelProgress * 1000) / 1000,
+    coinsToNext,
+    lifetimeRechargedCoins: lifetime,
+  };
+}
+
 function publicUser(caller) {
   const rewards = buildRewardsSnapshot(caller);
   const vip = getVipSnapshot(caller);
+  const level = getCallerLevelSnapshot(caller);
   return {
     id: caller.id,
     name: caller.name,
@@ -281,6 +302,10 @@ function publicUser(caller) {
     isVip: vip.isVip,
     vipPlan: vip.vipPlan,
     vipExpiresAt: vip.vipExpiresAt,
+    level: level.level,
+    levelProgress: level.levelProgress,
+    coinsToNextLevel: level.coinsToNext,
+    lifetimeRechargedCoins: level.lifetimeRechargedCoins,
   };
 }
 
@@ -1013,6 +1038,9 @@ async function verifyRechargePayment(userId, payload) {
   }
 
   caller.coins = (caller.coins || 0) + order.coins;
+  caller.lifetimeRechargedCoins =
+    Math.max(0, Number(caller.lifetimeRechargedCoins || 0)) +
+    Math.max(0, Number(order.coins || 0));
   await caller.save();
 
   const notificationService = require('./notification.service');
@@ -1026,10 +1054,12 @@ async function verifyRechargePayment(userId, payload) {
         orderId: razorpayOrderId,
         coinsAdded: order.coins,
         coins: caller.coins,
+        level: getCallerLevelSnapshot(caller).level,
       },
     })
     .catch(() => undefined);
 
+  const levelSnap = getCallerLevelSnapshot(caller);
   return {
     ok: true,
     data: {
@@ -1038,6 +1068,10 @@ async function verifyRechargePayment(userId, payload) {
       purpose: 'recharge',
       coinsAdded: order.coins,
       coins: caller.coins,
+      level: levelSnap.level,
+      levelProgress: levelSnap.levelProgress,
+      coinsToNextLevel: levelSnap.coinsToNext,
+      lifetimeRechargedCoins: levelSnap.lifetimeRechargedCoins,
       message: 'Payment verified successfully',
     },
   };
@@ -1054,12 +1088,23 @@ async function verifyVipPayment(userId, payload) {
   return result;
 }
 
-function derivePresence(receiver) {
-  if (receiver.status !== 'active') return 'offline';
-  if (receiver.isOnline === true) return 'online';
-  if (receiver.isOnline === false) return 'offline';
-  const updated = receiver.updatedAt ? new Date(receiver.updatedAt).getTime() : 0;
-  if (Date.now() - updated <= 2 * 60 * 60 * 1000) return 'online';
+function derivePresence(receiver, {busyIds, connectedIds} = {}) {
+  if (receiver.status !== 'active') {
+    return 'offline';
+  }
+  // Switch OFF → Offline (never Busy). Busy only applies while available.
+  const switchOn = receiver.isOnline === true;
+  if (!switchOn) {
+    return 'offline';
+  }
+  if (busyIds && busyIds.has(receiver.id)) {
+    return 'busy';
+  }
+  // Online only when switch is ON and receiver currently has a live socket
+  // (logged in / app open). Stale isOnline after logout must not show Online.
+  if (connectedIds instanceof Set) {
+    return connectedIds.has(receiver.id) ? 'online' : 'offline';
+  }
   return 'offline';
 }
 
@@ -1070,6 +1115,9 @@ function coinRatesForLevel(level) {
 }
 
 async function listDiscoverReceivers(callerId) {
+  const Call = require('../models/Call');
+  const {getConnectedReceiverIds} = require('../realtime/io');
+
   const receivers = await Receiver.find({status: 'active'})
     .sort({activatedAt: -1, updatedAt: -1})
     .select(
@@ -1077,11 +1125,17 @@ async function listDiscoverReceivers(callerId) {
     )
     .lean();
 
-  const followService = require('./follow.service');
-  const followingIds = await followService.getFollowingReceiverIds(
-    callerId,
-    receivers.map(r => r.id),
-  );
+  const receiverIds = receivers.map(r => r.id);
+
+  const callService = require('./call.service');
+  const [followingIds, busyIds, connectedIds] = await Promise.all([
+    (async () => {
+      const followService = require('./follow.service');
+      return followService.getFollowingReceiverIds(callerId, receiverIds);
+    })(),
+    callService.getBusyReceiverIds(receiverIds),
+    Promise.resolve(getConnectedReceiverIds()),
+  ]);
 
   const mapped = await Promise.all(
     receivers.map(async receiver => {
@@ -1100,7 +1154,7 @@ async function listDiscoverReceivers(callerId) {
         location: languages[0] || 'India',
         imageUrl: photos[0] || '',
         images: photos,
-        status: derivePresence(receiver),
+        status: derivePresence(receiver, {busyIds, connectedIds}),
         isVip: Number(receiver.level) >= 3,
         isVerified: true,
         languages,

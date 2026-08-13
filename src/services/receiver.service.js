@@ -281,6 +281,39 @@ const LEVEL_HOUR_TARGETS = {
   3: 400,
 };
 
+const MAX_RECEIVER_LEVEL = 3;
+
+/**
+ * Bump receiver level when lifetime hours cross the current band target.
+ * Emits a level_up notification when level increases.
+ */
+async function maybeLevelUpReceiver(receiverDoc) {
+  if (!receiverDoc?.id) {
+    return receiverDoc;
+  }
+  let level = Math.max(1, Number(receiverDoc.level) || 1);
+  const hours = Math.max(0, Number(receiverDoc.totalHours) || 0);
+  let leveled = false;
+  while (level < MAX_RECEIVER_LEVEL) {
+    const need = LEVEL_HOUR_TARGETS[level] || Number.POSITIVE_INFINITY;
+    if (hours < need) {
+      break;
+    }
+    level += 1;
+    leveled = true;
+  }
+  if (!leveled || level === Number(receiverDoc.level)) {
+    return receiverDoc;
+  }
+  receiverDoc.level = level;
+  await receiverDoc.save();
+  const notificationService = require('./notification.service');
+  notificationService
+    .notifyReceiverLevelUp({receiverId: receiverDoc.id, level})
+    .catch(() => undefined);
+  return receiverDoc;
+}
+
 function levelProgress(receiver) {
   const level = Number(receiver.level) || 1;
   const hoursDone = Math.max(0, Number(receiver.totalHours) || 0);
@@ -413,6 +446,34 @@ async function setOnlineStatus(receiverId, isOnline) {
   }
   receiver.isOnline = Boolean(isOnline);
   await receiver.save();
+  // Clear leftover ringing/connected rows so caller feed cannot stick on Busy.
+  // Always force-close: toggle is from dashboard/profile, not an in-call UI.
+  try {
+    const callService = require('./call.service');
+    await callService.releaseReceiverForOnline(receiver.id, {force: true});
+  } catch (err) {
+    console.error('[receiver.online.releaseCalls]', err.message || err);
+  }
+  try {
+    const callQueueService = require('./callQueue.service');
+    if (receiver.isOnline) {
+      callQueueService.scheduleProcessQueue(receiver.id, 5_000);
+    } else {
+      callQueueService.cancelScheduledProcess(receiver.id);
+    }
+  } catch (err) {
+    console.error('[receiver.online.queue]', err.message || err);
+  }
+  try {
+    const chatService = require('./chat.service');
+    await chatService.broadcastPresenceForUser(
+      'receiver',
+      receiver.id,
+      Boolean(receiver.isOnline),
+    );
+  } catch (err) {
+    console.error('[receiver.online.presence]', err.message || err);
+  }
   if (receiver.isOnline) {
     const notificationService = require('./notification.service');
     notificationService
@@ -420,6 +481,28 @@ async function setOnlineStatus(receiverId, isOnline) {
       .catch(err =>
         console.error('[receiver.online.notify]', err.message || err),
       );
+  }
+  return {ok: true, receiver};
+}
+
+async function logout(receiverId) {
+  const receiver = await findById(receiverId);
+  if (!receiver) {
+    return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  receiver.isOnline = false;
+  await receiver.save();
+  try {
+    const callQueueService = require('./callQueue.service');
+    callQueueService.cancelScheduledProcess(receiver.id);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const chatService = require('./chat.service');
+    await chatService.broadcastPresenceForUser('receiver', receiver.id, false);
+  } catch {
+    /* ignore */
   }
   return {ok: true, receiver};
 }
@@ -571,7 +654,10 @@ module.exports = {
   updatePassword,
   updateProfile,
   setOnlineStatus,
+  logout,
   getNotificationPreferences,
   updateNotificationPreferences,
   requestAccountDeletion,
+  maybeLevelUpReceiver,
+  LEVEL_HOUR_TARGETS,
 };

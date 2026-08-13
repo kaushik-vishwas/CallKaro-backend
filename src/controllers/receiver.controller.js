@@ -181,6 +181,19 @@ async function setOnline(req, res) {
   }
 }
 
+async function logout(req, res) {
+  try {
+    const result = await receiverService.logout(req.auth.receiverId);
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {}, 'Logged out');
+  } catch (error) {
+    console.error('[receiver.logout]', error);
+    return fail(res, 'Failed to log out.', 500);
+  }
+}
+
 async function updatePassword(req, res) {
   try {
     const {
@@ -391,6 +404,133 @@ async function getAnalytics(req, res) {
   }
 }
 
+async function getWallet(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.getWalletSummary(req.auth.receiverId);
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {wallet: result.wallet}, 'Wallet loaded');
+  } catch (error) {
+    console.error('[receiver.getWallet]', error);
+    return fail(res, error.message || 'Failed to load wallet.', 500);
+  }
+}
+
+async function getBank(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.getBank(req.auth.receiverId);
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {bank: result.bank}, 'Bank details loaded');
+  } catch (error) {
+    console.error('[receiver.getBank]', error);
+    return fail(res, error.message || 'Failed to load bank details.', 500);
+  }
+}
+
+async function updateBank(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.updateBank(
+      req.auth.receiverId,
+      req.body || {},
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {bank: result.bank}, 'Bank details saved');
+  } catch (error) {
+    console.error('[receiver.updateBank]', error);
+    return fail(res, error.message || 'Failed to save bank details.', 500);
+  }
+}
+
+async function createWithdrawal(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.createWithdrawal(
+      req.auth.receiverId,
+      req.body?.amountInr,
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(
+      res,
+      {withdrawal: result.withdrawal, otpHint: result.otpHint},
+      'Withdrawal created',
+      201,
+    );
+  } catch (error) {
+    console.error('[receiver.createWithdrawal]', error);
+    return fail(res, error.message || 'Failed to create withdrawal.', 500);
+  }
+}
+
+async function verifyWithdrawalOtp(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.verifyWithdrawalOtp(
+      req.auth.receiverId,
+      req.params.id,
+      req.body?.otp,
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(
+      res,
+      {withdrawal: result.withdrawal, walletBalance: result.walletBalance},
+      'Withdrawal verified',
+    );
+  } catch (error) {
+    console.error('[receiver.verifyWithdrawalOtp]', error);
+    return fail(res, error.message || 'Failed to verify withdrawal.', 500);
+  }
+}
+
+async function getWithdrawal(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.getWithdrawal(
+      req.auth.receiverId,
+      req.params.id,
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(res, {withdrawal: result.withdrawal}, 'Withdrawal loaded');
+  } catch (error) {
+    console.error('[receiver.getWithdrawal]', error);
+    return fail(res, error.message || 'Failed to load withdrawal.', 500);
+  }
+}
+
+async function resendWithdrawalOtp(req, res) {
+  try {
+    const withdrawalService = require('../services/withdrawal.service');
+    const result = await withdrawalService.resendOtp(
+      req.auth.receiverId,
+      req.params.id,
+    );
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+    return ok(
+      res,
+      {withdrawal: result.withdrawal, otpHint: result.otpHint},
+      'OTP resent',
+    );
+  } catch (error) {
+    console.error('[receiver.resendWithdrawalOtp]', error);
+    return fail(res, error.message || 'Failed to resend OTP.', 500);
+  }
+}
+
 module.exports = {
   getOnboarding,
   saveOnboarding,
@@ -401,6 +541,7 @@ module.exports = {
   getProfile,
   updateProfile,
   setOnline,
+  logout,
   updatePassword,
   getNotificationPreferences,
   updateNotificationPreferences,
@@ -412,4 +553,11 @@ module.exports = {
   getLeaderboard,
   getRankTips,
   getAnalytics,
+  getWallet,
+  getBank,
+  updateBank,
+  createWithdrawal,
+  verifyWithdrawalOtp,
+  getWithdrawal,
+  resendWithdrawalOtp,
 };

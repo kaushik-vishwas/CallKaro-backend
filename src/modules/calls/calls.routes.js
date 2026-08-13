@@ -20,5 +20,6 @@ router.post('/:id/reject', callController.reject);
 router.post('/:id/end', callController.end);
 router.post('/:id/heartbeat', callController.heartbeat);
 router.post('/:id/gifts', callController.sendGift);
+router.post('/:id/identity-feedback', callController.identityFeedback);
 
 module.exports = router;

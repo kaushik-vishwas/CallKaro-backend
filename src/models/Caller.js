@@ -52,8 +52,17 @@ const callerSchema = new mongoose.Schema(
     vipPlan: {type: String, default: null},
     vipExpiresAt: {type: Date, default: null},
 
+    /**
+     * Lifetime coins credited via wallet recharge (not welcome/check-in/VIP bonus).
+     * Caller level = floor(lifetimeRechargedCoins / 5000) + 1 (max 10).
+     */
+    lifetimeRechargedCoins: {type: Number, default: 0},
+
     /** Admin moderation — blocked callers cannot login or chat. */
     isBlocked: {type: Boolean, default: false, index: true},
+
+    /** Last chat/socket presence ping — used for Online indicators. */
+    chatLastSeenAt: {type: Date, default: null, index: true},
   },
   {timestamps: true, collection: 'callers'},
 );

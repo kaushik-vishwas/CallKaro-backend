@@ -115,11 +115,20 @@ function preferenceKeyForType(type) {
     case 'withdraw_failed':
       return 'withdrawalUpdates';
     case 'earnings_credit':
+    case 'gift_received':
+    case 'level_up':
+    case 'milestone_reached':
       return 'earningsUpdates';
     case 'payment_received':
       return 'paymentNotifications';
+    case 'missed_call':
+      return 'incomingCallAlerts';
     case 'new_message':
-      return null; // always notify for chat
+    case 'admin_blocked':
+    case 'admin_suspended':
+    case 'admin_warned':
+    case 'admin_activated':
+      return null; // always notify
     default:
       return null;
   }
@@ -154,8 +163,17 @@ async function createForReceiver({
     if (data?.conversationId) {
       query['data.conversationId'] = data.conversationId;
     }
+    if (data?.callId) {
+      query['data.callId'] = data.callId;
+    }
     if (data?.amountInr != null) {
       query['data.amountInr'] = data.amountInr;
+    }
+    if (data?.level != null) {
+      query['data.level'] = data.level;
+    }
+    if (data?.milestone != null) {
+      query['data.milestone'] = data.milestone;
     }
     const existing = await Notification.findOne(query).lean();
     if (existing) {
@@ -278,6 +296,175 @@ async function notifyFollowersReceiverOnline(receiver) {
   );
 }
 
+function formatInr(amount) {
+  return `₹${Math.round(Number(amount) || 0).toLocaleString('en-IN')}`;
+}
+
+async function notifyReceiverEarnings({
+  receiverId,
+  amountInr,
+  source = 'video_call',
+  callId = null,
+  conversationId = null,
+}) {
+  const amount = Number(amountInr) || 0;
+  if (!receiverId || amount <= 0) {
+    return null;
+  }
+  const isChat = source === 'chat';
+  return createForReceiver({
+    receiverId,
+    type: 'earnings_credit',
+    title: isChat ? 'Chat earnings credited' : 'Call earnings credited',
+    body: `${formatInr(amount)} added to your wallet from ${
+      isChat ? 'chat' : 'your video call'
+    }.`,
+    data: {
+      amountInr: amount,
+      source,
+      callId,
+      conversationId,
+    },
+    dedupeMinutes: isChat ? 5 : 0,
+  });
+}
+
+async function notifyReceiverGift({
+  receiverId,
+  giftName,
+  emoji,
+  amountInr,
+  coins,
+  callId,
+  callerName,
+}) {
+  if (!receiverId) {
+    return null;
+  }
+  const amount = Number(amountInr) || 0;
+  const label = `${emoji || '🎁'} ${giftName || 'Gift'}`.trim();
+  return createForReceiver({
+    receiverId,
+    type: 'gift_received',
+    title: `You received ${label}`,
+    body:
+      amount > 0
+        ? `${callerName || 'A caller'} sent you a gift. ${formatInr(
+            amount,
+          )} added to your wallet.`
+        : `${callerName || 'A caller'} sent you a gift on your video call.`,
+    data: {
+      giftName,
+      emoji,
+      amountInr: amount,
+      coins: Number(coins) || 0,
+      callId,
+      callerName,
+    },
+  });
+}
+
+async function notifyReceiverMissedCall({
+  receiverId,
+  callerName,
+  callId,
+  callerId,
+}) {
+  if (!receiverId) {
+    return null;
+  }
+  const name = callerName || 'A caller';
+  return createForReceiver({
+    receiverId,
+    type: 'missed_call',
+    title: 'Missed video call',
+    body: `${name} tried to reach you. Go online to take the next one.`,
+    data: {callId, callerId, callerName: name},
+    dedupeMinutes: 2,
+  });
+}
+
+async function notifyReceiverAdminAction({
+  receiverId,
+  action,
+  reason = '',
+}) {
+  if (!receiverId || !action) {
+    return null;
+  }
+  const map = {
+    block: {
+      type: 'admin_blocked',
+      title: 'Account blocked',
+      body:
+        reason ||
+        'Your account was blocked by admin due to a policy issue. Contact support for help.',
+    },
+    suspend: {
+      type: 'admin_suspended',
+      title: 'Account suspended',
+      body:
+        reason ||
+        'Your account was suspended by admin. You cannot go online until reactivated.',
+    },
+    warn: {
+      type: 'admin_warned',
+      title: 'Account warning',
+      body:
+        reason ||
+        'You received a warning from admin. Please follow Callkaro community guidelines.',
+    },
+    activate: {
+      type: 'admin_activated',
+      title: 'Account reactivated',
+      body: 'Your account is active again. You can go online and accept calls.',
+    },
+  };
+  const copy = map[action];
+  if (!copy) {
+    return null;
+  }
+  return createForReceiver({
+    receiverId,
+    type: copy.type,
+    title: copy.title,
+    body: copy.body,
+    data: {action, reason},
+  });
+}
+
+async function notifyReceiverLevelUp({receiverId, level}) {
+  const next = Number(level) || 0;
+  if (!receiverId || next < 2) {
+    return null;
+  }
+  return createForReceiver({
+    receiverId,
+    type: 'level_up',
+    title: `Level ${next} unlocked!`,
+    body: `Congratulations — you reached Level ${next}. Keep taking calls to earn more.`,
+    data: {level: next},
+    dedupeMinutes: 60,
+  });
+}
+
+const CALL_MILESTONES = [10, 25, 50, 100, 250, 500];
+
+async function notifyReceiverCallMilestone({receiverId, totalCalls}) {
+  const count = Number(totalCalls) || 0;
+  if (!receiverId || !CALL_MILESTONES.includes(count)) {
+    return null;
+  }
+  return createForReceiver({
+    receiverId,
+    type: 'milestone_reached',
+    title: `${count} calls milestone!`,
+    body: `Amazing — you’ve completed ${count} video calls on Callkaro.`,
+    data: {milestone: count, totalCalls: count},
+    dedupeMinutes: 1440,
+  });
+}
+
 module.exports = {
   createForCaller,
   createForReceiver,
@@ -286,5 +473,11 @@ module.exports = {
   markRead,
   markAllRead,
   notifyFollowersReceiverOnline,
+  notifyReceiverEarnings,
+  notifyReceiverGift,
+  notifyReceiverMissedCall,
+  notifyReceiverAdminAction,
+  notifyReceiverLevelUp,
+  notifyReceiverCallMilestone,
   publicNotification,
 };

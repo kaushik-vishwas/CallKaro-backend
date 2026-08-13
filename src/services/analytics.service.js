@@ -1,3 +1,5 @@
+const Call = require('../models/Call');
+const EarningLedger = require('../models/EarningLedger');
 const Receiver = require('../models/Receiver');
 
 const RANGES = {
@@ -8,23 +10,18 @@ const RANGES = {
 
 const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function hashSeed(id) {
-  const s = String(id || 'receiver');
-  let h = 0;
-  for (let i = 0; i < s.length; i += 1) {
-    h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  }
-  return h || 1;
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
-function mulberry32(seed) {
-  let t = seed >>> 0;
-  return () => {
-    t += 0x6d2b79f5;
-    let r = Math.imul(t ^ (t >>> 15), 1 | t);
-    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
-  };
+function dayKey(date) {
+  const d = new Date(date);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function formatDuration(totalMinutes) {
@@ -34,43 +31,24 @@ function formatDuration(totalMinutes) {
   return `${m}:${String(s).padStart(2, '0')} min`;
 }
 
-function avgCallMinutes(receiver) {
-  const calls = Math.max(0, Number(receiver.totalCalls) || 0);
-  const hours = Math.max(0, Number(receiver.totalHours) || 0);
-  if (calls > 0 && hours > 0) {
-    return (hours * 60) / calls;
-  }
-  // Default matching design when no real talk-time data
-  return 7 + 24 / 60;
-}
-
-function bucketLabels(days) {
+function bucketMeta(days) {
   const labels = [];
-  const now = new Date();
+  const today = startOfDay(new Date());
   for (let i = days - 1; i >= 0; i -= 1) {
-    const d = new Date(now);
-    d.setHours(12, 0, 0, 0);
+    const d = new Date(today);
     d.setDate(d.getDate() - i);
-    if (days <= 7) {
-      labels.push({
-        key: d.toISOString().slice(0, 10),
-        label: DAY_SHORT[d.getDay()],
-        date: d,
-      });
-    } else if (days <= 30) {
-      labels.push({
-        key: d.toISOString().slice(0, 10),
-        label: String(d.getDate()),
-        date: d,
-      });
-    } else {
-      // Weekly buckets for 3M — group later
-      labels.push({
-        key: d.toISOString().slice(0, 10),
-        label: DAY_SHORT[d.getDay()],
-        date: d,
-      });
-    }
+    labels.push({
+      key: dayKey(d),
+      label:
+        days <= 7
+          ? DAY_SHORT[d.getDay()]
+          : days <= 30
+            ? String(d.getDate())
+            : DAY_SHORT[d.getDay()],
+      date: d,
+      fullDayName: d.toLocaleDateString('en-IN', {weekday: 'long'}),
+      weekday: DAY_SHORT[d.getDay()],
+    });
   }
   return labels;
 }
@@ -86,114 +64,154 @@ function compressToChartPoints(daily, maxPoints) {
     const earningsInr = slice.reduce((s, p) => s + p.earningsInr, 0);
     const calls = slice.reduce((s, p) => s + p.calls, 0);
     const last = slice[slice.length - 1];
+    const peakInSlice = slice.reduce((a, b) =>
+      b.earningsInr > a.earningsInr ? b : a,
+    );
     out.push({
       key: last.key,
       label: last.label,
-      earningsInr: Math.round(earningsInr),
+      earningsInr: Math.round(earningsInr * 100) / 100,
       calls,
+      weekday: last.weekday,
+      fullDayName: peakInSlice.fullDayName,
+      // Preserve peak day key for isPeak mapping against daily top
+      peakKey: peakInSlice.key,
     });
   }
   return out;
 }
 
-function buildSeries(receiver, rangeKey) {
-  const cfg = RANGES[rangeKey] || RANGES['7d'];
-  const days = cfg.days;
-  const rand = mulberry32(hashSeed(receiver._id) + days);
-  const totalBase =
-    Number(receiver.earnings) ||
-    Number(receiver.walletBalance) ||
-    Number(receiver.pendingEarnings) ||
-    0;
-
-  // Scale period total from lifetime (demo-friendly floors)
-  const periodShare = days <= 7 ? 0.35 : days <= 30 ? 0.7 : 1;
-  let periodTotal = Math.round(totalBase * periodShare);
-  if (periodTotal < 500) {
-    periodTotal = days <= 7 ? 7060 : days <= 30 ? 18400 : 48200;
-  }
-
-  const totalCallsBase = Math.max(0, Number(receiver.totalCalls) || 0);
-  let periodCalls = Math.max(
-    1,
-    Math.round(totalCallsBase * periodShare) || (days <= 7 ? 28 : days <= 30 ? 95 : 240),
-  );
-
-  const dayMeta = bucketLabels(days);
-  const weights = dayMeta.map(() => 0.35 + rand() * 1.4);
-  // Boost weekend / last day slightly for a clear "top day"
-  const peakIndex = dayMeta.reduce((best, _, i) => {
-    const w = weights[i] * (dayMeta[i].date.getDay() === 0 ? 1.55 : 1);
-    weights[i] = w;
-    return w > weights[best] ? i : best;
-  }, 0);
-  weights[peakIndex] *= 1.35;
-
-  const weightSum = weights.reduce((a, b) => a + b, 0);
-  let remainingEarn = periodTotal;
-  let remainingCalls = periodCalls;
-  const daily = dayMeta.map((meta, i) => {
-    const isLast = i === dayMeta.length - 1;
-    const earn = isLast
-      ? remainingEarn
-      : Math.max(0, Math.round((periodTotal * weights[i]) / weightSum));
-    const calls = isLast
-      ? remainingCalls
-      : Math.max(0, Math.round((periodCalls * weights[i]) / weightSum));
-    remainingEarn -= earn;
-    remainingCalls -= calls;
-    return {
-      key: meta.key,
-      label: meta.label,
-      earningsInr: earn,
-      calls,
-      weekday: DAY_SHORT[meta.date.getDay()],
-      fullDayName: meta.date.toLocaleDateString('en-IN', {weekday: 'long'}),
-    };
-  });
-
-  const chartPoints =
-    days <= 7
-      ? daily
-      : days <= 30
-        ? compressToChartPoints(daily, 10)
-        : compressToChartPoints(daily, 12);
-
-  const top = daily.reduce((a, b) => (b.earningsInr > a.earningsInr ? b : a), daily[0]);
-  const coins = periodTotal * 2;
-  const avgMinutes = avgCallMinutes(receiver);
-
-  return {
-    range: rangeKey,
-    rangeLabel: cfg.label,
-    totalEarningsInr: periodTotal,
-    coins,
-    totalCalls: periodCalls,
-    avgDurationLabel: formatDuration(avgMinutes),
-    avgDurationMinutes: Math.round(avgMinutes * 10) / 10,
-    topEarningDay: top.fullDayName,
-    topEarningDayShort: top.weekday,
-    peakEarningsInr: top.earningsInr,
-    series: chartPoints.map(p => ({
-      key: p.key,
-      label: p.label,
-      earningsInr: p.earningsInr,
-      calls: p.calls,
-      isPeak: p.key === top.key,
-    })),
-  };
-}
-
 async function getAnalytics(receiverId, range = '7d') {
   const key = String(range || '7d').toLowerCase();
   const rangeKey = RANGES[key] ? key : '7d';
-  const receiver = await Receiver.findById(receiverId).lean();
+  const cfg = RANGES[rangeKey];
+  const rid = String(receiverId || '').trim();
+
+  const receiver = await Receiver.findOne({id: rid}).lean();
   if (!receiver) {
     const err = new Error('Receiver not found');
     err.statusCode = 404;
     throw err;
   }
-  return buildSeries(receiver, rangeKey);
+
+  const since = startOfDay(new Date());
+  since.setDate(since.getDate() - (cfg.days - 1));
+
+  const [ledgerRows, callRows] = await Promise.all([
+    EarningLedger.find({
+      receiverId: rid,
+      source: {$ne: 'withdrawal'},
+      createdAt: {$gte: since},
+    })
+      .select('amountInr coins createdAt source')
+      .lean(),
+    Call.find({
+      receiverId: rid,
+      status: 'ended',
+      connectedAt: {$ne: null, $gte: since},
+      durationSeconds: {$gt: 0},
+    })
+      .select('durationSeconds connectedAt endedAt receiverEarningsInr')
+      .lean(),
+  ]);
+
+  const earnByDay = new Map();
+  const coinsByDay = new Map();
+  for (const row of ledgerRows) {
+    const k = dayKey(row.createdAt);
+    earnByDay.set(
+      k,
+      (earnByDay.get(k) || 0) + Math.max(0, Number(row.amountInr) || 0),
+    );
+    coinsByDay.set(
+      k,
+      (coinsByDay.get(k) || 0) + Math.max(0, Number(row.coins) || 0),
+    );
+  }
+
+  const callsByDay = new Map();
+  const durationByDay = new Map();
+  for (const row of callRows) {
+    const when = row.connectedAt || row.endedAt;
+    if (!when) {
+      continue;
+    }
+    const k = dayKey(when);
+    callsByDay.set(k, (callsByDay.get(k) || 0) + 1);
+    durationByDay.set(
+      k,
+      (durationByDay.get(k) || 0) + Math.max(0, Number(row.durationSeconds) || 0),
+    );
+  }
+
+  const dayMeta = bucketMeta(cfg.days);
+  const daily = dayMeta.map(meta => ({
+    key: meta.key,
+    label: meta.label,
+    earningsInr: Math.round((earnByDay.get(meta.key) || 0) * 100) / 100,
+    calls: callsByDay.get(meta.key) || 0,
+    durationSeconds: durationByDay.get(meta.key) || 0,
+    weekday: meta.weekday,
+    fullDayName: meta.fullDayName,
+  }));
+
+  const totalEarningsInr =
+    Math.round(
+      daily.reduce((s, d) => s + d.earningsInr, 0) * 100,
+    ) / 100;
+  const totalCalls = daily.reduce((s, d) => s + d.calls, 0);
+  const totalDurationSeconds = daily.reduce((s, d) => s + d.durationSeconds, 0);
+  const totalCoins = daily.reduce(
+    (s, d) => s + (coinsByDay.get(d.key) || 0),
+    0,
+  );
+
+  const avgMinutes =
+    totalCalls > 0 ? totalDurationSeconds / 60 / totalCalls : 0;
+
+  const top = daily.reduce(
+    (best, cur) => (cur.earningsInr > best.earningsInr ? cur : best),
+    daily[0] || {
+      key: '',
+      earningsInr: 0,
+      fullDayName: '—',
+      weekday: '—',
+    },
+  );
+
+  const chartPoints =
+    cfg.days <= 7
+      ? daily
+      : cfg.days <= 30
+        ? compressToChartPoints(daily, 10)
+        : compressToChartPoints(daily, 12);
+
+  const peakKey = top.earningsInr > 0 ? top.key : null;
+
+  return {
+    range: rangeKey,
+    rangeLabel: cfg.label,
+    totalEarningsInr,
+    coins: totalCoins,
+    totalCalls,
+    avgDurationLabel: formatDuration(avgMinutes),
+    avgDurationMinutes: Math.round(avgMinutes * 10) / 10,
+    topEarningDay: top.earningsInr > 0 ? top.fullDayName : '—',
+    topEarningDayShort: top.earningsInr > 0 ? top.weekday : '—',
+    peakEarningsInr: top.earningsInr,
+    series: chartPoints.map(p => {
+      const isPeak =
+        peakKey != null &&
+        (p.key === peakKey || p.peakKey === peakKey);
+      return {
+        key: p.key,
+        label: p.label,
+        earningsInr: p.earningsInr,
+        calls: p.calls,
+        isPeak,
+      };
+    }),
+  };
 }
 
 module.exports = {

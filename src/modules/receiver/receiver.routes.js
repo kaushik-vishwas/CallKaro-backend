@@ -9,6 +9,7 @@ router.get('/me', receiverAuthRequired, receiverController.me);
 router.get('/profile', receiverAuthRequired, receiverController.getProfile);
 router.patch('/profile', receiverAuthRequired, receiverController.updateProfile);
 router.patch('/online', receiverAuthRequired, receiverController.setOnline);
+router.post('/logout', receiverAuthRequired, receiverController.logout);
 router.get(
   '/notification-preferences',
   receiverAuthRequired,
@@ -65,6 +66,30 @@ router.get(
   '/analytics',
   receiverAuthRequired,
   receiverController.getAnalytics,
+);
+
+router.get('/wallet', receiverAuthRequired, receiverController.getWallet);
+router.get('/bank', receiverAuthRequired, receiverController.getBank);
+router.patch('/bank', receiverAuthRequired, receiverController.updateBank);
+router.post(
+  '/withdrawals',
+  receiverAuthRequired,
+  receiverController.createWithdrawal,
+);
+router.get(
+  '/withdrawals/:id',
+  receiverAuthRequired,
+  receiverController.getWithdrawal,
+);
+router.post(
+  '/withdrawals/:id/verify-otp',
+  receiverAuthRequired,
+  receiverController.verifyWithdrawalOtp,
+);
+router.post(
+  '/withdrawals/:id/resend-otp',
+  receiverAuthRequired,
+  receiverController.resendWithdrawalOtp,
 );
 
 router.get('/onboard/:token', receiverController.getOnboarding);

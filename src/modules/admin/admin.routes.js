@@ -8,6 +8,7 @@ const adminReceiversController = require('../../controllers/adminReceivers.contr
 const adminTransactionsController = require('../../controllers/adminTransactions.controller');
 const adminReportsController = require('../../controllers/adminReports.controller');
 const adminSupportTicketsController = require('../../controllers/adminSupportTickets.controller');
+const adminVipController = require('../../controllers/adminVip.controller');
 
 const router = express.Router();
 
@@ -131,5 +132,14 @@ router.patch(
   adminAuthRequired,
   adminSupportTicketsController.updateSupportTicketStatus,
 );
+
+router.get('/vip/plans', adminAuthRequired, adminVipController.listVipPlans);
+router.get(
+  '/vip/analytics',
+  adminAuthRequired,
+  adminVipController.vipAnalytics,
+);
+router.get('/vip/users', adminAuthRequired, adminVipController.listVipUsers);
+router.get('/vip/users/:id', adminAuthRequired, adminVipController.getVipUser);
 
 module.exports = router;

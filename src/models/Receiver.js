@@ -6,6 +6,9 @@ const bankSchema = new mongoose.Schema(
     accountNumber: {type: String, default: ''},
     ifsc: {type: String, default: ''},
     upiId: {type: String, default: ''},
+    bankName: {type: String, default: ''},
+    branch: {type: String, default: ''},
+    accountType: {type: String, default: 'Savings'},
   },
   {_id: false},
 );
@@ -80,6 +83,8 @@ const receiverSchema = new mongoose.Schema(
     profileViews: {type: Number, default: 0},
     followers: {type: Number, default: 0},
     isOnline: {type: Boolean, default: false},
+    /** Last chat/socket presence ping — used for Online indicators. */
+    chatLastSeenAt: {type: Date, default: null, index: true},
     /** Last known leaderboard rank (for "moved up" UI). */
     previousRank: {type: Number, default: null},
     notificationPreferences: {

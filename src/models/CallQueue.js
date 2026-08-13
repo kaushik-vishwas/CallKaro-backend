@@ -23,11 +23,13 @@ const callQueueSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['waiting', 'cancelled', 'fulfilled'],
+      enum: ['waiting', 'calling', 'cancelled', 'fulfilled'],
       default: 'waiting',
       index: true,
     },
     isVip: {type: Boolean, default: false, index: true},
+    /** Active callback call id while status === 'calling'. */
+    callId: {type: String, default: null, index: true},
     callerSnapshot: {
       name: {type: String, default: 'Caller'},
       avatarUrl: {type: String, default: ''},

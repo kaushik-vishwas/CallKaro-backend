@@ -70,13 +70,11 @@ function receiverCode(receiver) {
 }
 
 /**
- * Presence is not stored — soft proxy: active + updated within 2h ≈ online.
+ * Presence uses the online switch — not a soft updatedAt heuristic.
  */
 function derivePresence(receiver) {
   if (receiver.status !== 'active') return 'offline';
-  const updated = receiver.updatedAt ? new Date(receiver.updatedAt).getTime() : 0;
-  if (Date.now() - updated <= 2 * 60 * 60 * 1000) return 'online';
-  return 'offline';
+  return receiver.isOnline === true ? 'online' : 'offline';
 }
 
 function moneyFromEarnings(earnings) {
@@ -371,24 +369,56 @@ async function getReceiverDetail(id) {
   };
 }
 
-async function updateReceiverStatus(id, action) {
+async function updateReceiverStatus(id, action, reasonText = '') {
   const receiver = await Receiver.findOne({id});
   if (!receiver) return {ok: false, message: 'Receiver not found.'};
 
+  const note = String(reasonText || '').trim();
+
   if (action === 'block') {
     receiver.status = 'rejected';
-    receiver.rejectionReason = receiver.rejectionReason || 'Blocked by admin';
+    receiver.rejectionReason =
+      note || receiver.rejectionReason || 'Blocked by admin';
+    receiver.isOnline = false;
   } else if (action === 'suspend') {
     receiver.status = 'inactive';
+    receiver.isOnline = false;
+    if (note) {
+      receiver.rejectionReason = note;
+    }
   } else if (action === 'activate') {
     receiver.status = 'active';
     receiver.activatedAt = receiver.activatedAt || new Date();
     receiver.rejectionReason = '';
+  } else if (action === 'warn') {
+    // Soft warning — keep status, notify receiver.
+    if (note) {
+      receiver.rejectionReason = note;
+    }
   } else {
     return {ok: false, message: 'Invalid action.'};
   }
 
   await receiver.save();
+
+  try {
+    const notificationService = require('./notification.service');
+    if (
+      action === 'block' ||
+      action === 'suspend' ||
+      action === 'activate' ||
+      action === 'warn'
+    ) {
+      await notificationService.notifyReceiverAdminAction({
+        receiverId: receiver.id,
+        action,
+        reason: String(receiver.rejectionReason || note || ''),
+      });
+    }
+  } catch (err) {
+    console.error('[admin.receiver.notify]', err.message || err);
+  }
+
   return getReceiverDetail(receiver.id);
 }
 

@@ -84,6 +84,11 @@ async function getOrCreateConversation({callerId, receiverId}) {
 }
 
 async function mapConversationForViewer(conversation, viewerRole) {
+  const {
+    isCallerConnected,
+    isReceiverConnected,
+    isDbRecentlySeen,
+  } = require('../realtime/io');
   const otherId =
     viewerRole === 'caller' ? conversation.receiverId : conversation.callerId;
   let name = 'User';
@@ -93,7 +98,7 @@ async function mapConversationForViewer(conversation, viewerRole) {
 
   if (viewerRole === 'caller') {
     const receiver = await Receiver.findOne({id: otherId})
-      .select('name age photos isOnline')
+      .select('name age photos isOnline status chatLastSeenAt')
       .lean();
     if (receiver) {
       name = receiver.name;
@@ -109,11 +114,16 @@ async function mapConversationForViewer(conversation, viewerRole) {
       } catch {
         /* keep raw URL */
       }
-      online = Boolean(receiver.isOnline);
+      // Discover/chat Online = I'm Online switch ON + live socket (or recent ping).
+      online =
+        receiver.status === 'active' &&
+        receiver.isOnline === true &&
+        (isReceiverConnected(receiver.id) ||
+          isDbRecentlySeen(receiver.chatLastSeenAt));
     }
   } else {
     const caller = await Caller.findOne({id: otherId})
-      .select('name avatarUrl')
+      .select('name avatarUrl chatLastSeenAt')
       .lean();
     if (caller) {
       name = caller.name;
@@ -125,6 +135,8 @@ async function mapConversationForViewer(conversation, viewerRole) {
       } catch {
         /* keep raw */
       }
+      online =
+        isCallerConnected(caller.id) || isDbRecentlySeen(caller.chatLastSeenAt);
     }
   }
 
@@ -148,6 +160,145 @@ async function mapConversationForViewer(conversation, viewerRole) {
     status: online ? 'online' : 'offline',
     online,
   };
+}
+
+/**
+ * Notify chat peers when a user connects/disconnects so green dots update live.
+ * For receivers, "online" also requires the I'm Online switch.
+ */
+async function broadcastPresence(io, auth, online) {
+  if (!io || !auth) {
+    return;
+  }
+  const role = auth.role === 'receiver' ? 'receiver' : 'caller';
+  const userId =
+    role === 'caller' ? String(auth.userId || '') : String(auth.receiverId || '');
+  if (!userId) {
+    return;
+  }
+
+  let effectivelyOnline = Boolean(online);
+  let discoverStatus = effectivelyOnline ? 'online' : 'offline';
+
+  if (role === 'receiver') {
+    const Receiver = require('../models/Receiver');
+    const {
+      isReceiverConnected,
+    } = require('../realtime/io');
+    const receiver = await Receiver.findOne({id: userId})
+      .select('isOnline status')
+      .lean();
+    const switchOn =
+      receiver?.status === 'active' && receiver?.isOnline === true;
+    const connected = isReceiverConnected(userId);
+    effectivelyOnline = Boolean(online) && switchOn && connected;
+
+    try {
+      const callService = require('./call.service');
+      const busyIds = await callService.getBusyReceiverIds([userId]);
+      if (switchOn && busyIds.has(userId)) {
+        discoverStatus = 'busy';
+        effectivelyOnline = false;
+      } else if (effectivelyOnline) {
+        discoverStatus = 'online';
+      } else {
+        discoverStatus = 'offline';
+      }
+    } catch {
+      discoverStatus = effectivelyOnline ? 'online' : 'offline';
+    }
+
+    // Home discover cards — all callers, no refresh needed.
+    io.to('role:caller').emit('receiver:presence', {
+      receiverId: userId,
+      status: discoverStatus,
+      online: discoverStatus === 'online',
+      isOnline: discoverStatus === 'online',
+    });
+  }
+
+  const filter =
+    role === 'caller' ? {callerId: userId} : {receiverId: userId};
+  const rows = await Conversation.find(filter)
+    .select('id callerId receiverId')
+    .lean();
+
+  for (const row of rows) {
+    const payload = {
+      conversationId: row.id,
+      userId,
+      role,
+      receiverId: role === 'receiver' ? userId : row.receiverId,
+      online: effectivelyOnline,
+      status: effectivelyOnline ? 'online' : 'offline',
+    };
+    const peerRoom =
+      role === 'caller'
+        ? `receiver:${row.receiverId}`
+        : `caller:${row.callerId}`;
+    io.to(peerRoom).emit('presence:update', payload);
+    io.to(`conversation:${row.id}`).emit('presence:update', payload);
+  }
+}
+
+/** Broadcast presence for a known user id/role (e.g. after I'm Online toggle). */
+async function broadcastPresenceForUser(role, userId, online) {
+  const {getIo} = require('../realtime/io');
+  const io = getIo();
+  if (!io) {
+    return;
+  }
+  const auth =
+    role === 'caller'
+      ? {role: 'caller', userId}
+      : {role: 'receiver', receiverId: userId};
+  return broadcastPresence(io, auth, online);
+}
+
+/** Push discover status for one receiver to every connected caller. */
+async function broadcastReceiverDiscoverStatus(receiverId, statusOverride) {
+  const {getIo} = require('../realtime/io');
+  const io = getIo();
+  if (!io) {
+    return;
+  }
+  const rid = String(receiverId || '').trim();
+  if (!rid) {
+    return;
+  }
+
+  let status = statusOverride;
+  if (!status) {
+    const Receiver = require('../models/Receiver');
+    const {isReceiverConnected} = require('../realtime/io');
+    const receiver = await Receiver.findOne({id: rid})
+      .select('isOnline status')
+      .lean();
+    const switchOn =
+      receiver?.status === 'active' && receiver?.isOnline === true;
+    if (!switchOn) {
+      status = 'offline';
+    } else {
+      try {
+        const callService = require('./call.service');
+        const busyIds = await callService.getBusyReceiverIds([rid]);
+        if (busyIds.has(rid)) {
+          status = 'busy';
+        } else {
+          status = isReceiverConnected(rid) ? 'online' : 'offline';
+        }
+      } catch {
+        status = isReceiverConnected(rid) ? 'online' : 'offline';
+      }
+    }
+  }
+
+  io.to('role:caller').emit('receiver:presence', {
+    receiverId: rid,
+    status,
+    online: status === 'online',
+    isOnline: status === 'online',
+  });
 }
 
 async function attachBlockState(mapped, conversation, viewerRole) {
@@ -302,6 +453,17 @@ async function sendMessage(auth, conversationId, text) {
         meta: {conversationId: conversation.id},
       });
       earningsInr = credit.amountInr || 0;
+      if (credit.ok && earningsInr > 0) {
+        const notificationService = require('./notification.service');
+        notificationService
+          .notifyReceiverEarnings({
+            receiverId: conversation.receiverId,
+            amountInr: earningsInr,
+            source: 'chat',
+            conversationId: conversation.id,
+          })
+          .catch(() => undefined);
+      }
     }
 
     callerBalance = {
@@ -501,4 +663,7 @@ module.exports = {
   assertParticipant,
   broadcastMessage,
   broadcastRead,
+  broadcastPresence,
+  broadcastPresenceForUser,
+  broadcastReceiverDiscoverStatus,
 };

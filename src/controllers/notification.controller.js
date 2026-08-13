@@ -58,6 +58,30 @@ const RECEIVER_CLIENT_COPY = {
   },
 };
 
+function enrichReceiverBody(type, copyBody, data = {}) {
+  const amount = data?.amountInr != null ? Number(data.amountInr) : null;
+  if (amount == null || Number.isNaN(amount)) {
+    return copyBody;
+  }
+  const pretty = `₹${Math.round(amount).toLocaleString('en-IN')}`;
+  if (type === 'withdraw_submitted') {
+    return `Your withdrawal of ${pretty} was submitted and is awaiting review.`;
+  }
+  if (type === 'withdraw_under_review') {
+    return `Your withdrawal of ${pretty} is under review.`;
+  }
+  if (type === 'withdraw_success') {
+    return `${pretty} was transferred to your bank account successfully.`;
+  }
+  if (type === 'withdraw_failed') {
+    return `Withdrawal of ${pretty} failed. Please try again or contact support.`;
+  }
+  if (type === 'earnings_credit' || type === 'payment_received') {
+    return `${pretty} was added to your wallet.`;
+  }
+  return `${copyBody} Amount: ${pretty}.`;
+}
+
 function ownerFromAuth(auth) {
   if (auth?.role === 'receiver') {
     return {audience: 'receiver', ownerId: auth.receiverId};
@@ -121,17 +145,16 @@ async function report(req, res) {
       }
       const copy = RECEIVER_CLIENT_COPY[type];
       const title = String(req.body?.title || copy.title);
-      const body = String(req.body?.body || copy.body);
-      const amountInr = req.body?.data?.amountInr;
+      const data = req.body?.data || {};
+      const body = String(
+        req.body?.body || enrichReceiverBody(type, copy.body, data),
+      );
       const notification = await notificationService.createForReceiver({
         receiverId: ownerId,
         type,
         title,
-        body:
-          amountInr != null && !req.body?.body
-            ? `${copy.body} Amount: ₹${Number(amountInr).toLocaleString('en-IN')}.`
-            : body,
-        data: req.body?.data || {},
+        body,
+        data,
         dedupeMinutes:
           type === 'withdraw_submitted' || type === 'withdraw_under_review'
             ? 2
