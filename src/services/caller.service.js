@@ -544,6 +544,128 @@ async function validateLogin(email, password) {
   return {ok: true, user: caller};
 }
 
+function sanitizeDeviceIp(raw) {
+  const value = String(raw || '')
+    .trim()
+    .replace(/^::ffff:/i, '');
+  if (!value || value === '127.0.0.1' || value === '::1') {
+    return '';
+  }
+  if (!/^[0-9a-fA-F:.]+$/.test(value)) {
+    return '';
+  }
+  return value.slice(0, 45);
+}
+
+function resolveQuickLoginIp(deviceIp, req) {
+  const fromBody = sanitizeDeviceIp(deviceIp);
+  if (fromBody) {
+    return fromBody;
+  }
+  const forwarded = req?.headers?.['x-forwarded-for'];
+  if (forwarded) {
+    const candidate = sanitizeDeviceIp(String(forwarded).split(',')[0]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return sanitizeDeviceIp(req?.socket?.remoteAddress);
+}
+
+function quickLoginEmail(deviceIp) {
+  const slug = String(deviceIp).replace(/[:.]/g, '-');
+  return `quick.${slug}@callkaro.dev`;
+}
+
+function quickLoginPassword(deviceIp) {
+  return crypto
+    .createHmac('sha256', config.jwtSecret)
+    .update(`quick-login:${deviceIp}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function quickLoginDisplayName(deviceIp) {
+  const parts = String(deviceIp).split('.');
+  const tail = parts.length >= 4 ? parts.slice(-2).join('.') : deviceIp;
+  return `Quick ${tail}`;
+}
+
+/**
+ * Dev-only: find or create a verified caller tied to one device LAN IP.
+ * Each IP gets its own account — other devices are unaffected.
+ */
+async function quickLogin(deviceIp, req) {
+  if (!config.enableQuickLogin) {
+    return {
+      ok: false,
+      message: 'Quick login is not available.',
+      status: 403,
+    };
+  }
+
+  const ip = resolveQuickLoginIp(deviceIp, req);
+  if (!ip) {
+    return {
+      ok: false,
+      message:
+        'Could not detect this device IP. Connect to Wi‑Fi and try again.',
+      status: 400,
+    };
+  }
+
+  const email = quickLoginEmail(ip);
+  const password = quickLoginPassword(ip);
+  let caller = await findUserByEmail(email);
+
+  if (!caller) {
+    const passwordHash = await bcrypt.hash(password, 10);
+    caller = await Caller.create({
+      id: uuidv4(),
+      email,
+      name: quickLoginDisplayName(ip),
+      phone: '',
+      profile: '',
+      avatarUrl: '',
+      passwordHash,
+      coins: 0,
+      isVerified: true,
+    });
+  } else {
+    if (!caller.isVerified) {
+      caller.isVerified = true;
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    if (!(await bcrypt.compare(password, caller.passwordHash))) {
+      caller.passwordHash = passwordHash;
+    }
+    await caller.save();
+  }
+
+  if (caller.isBlocked) {
+    return {
+      ok: false,
+      message: 'Your account has been blocked. Contact support.',
+      status: 403,
+    };
+  }
+  if (caller.isSuspended) {
+    return {
+      ok: false,
+      message: 'Your account has been suspended. Contact support.',
+      status: 403,
+    };
+  }
+
+  return {
+    ok: true,
+    user: caller,
+    email,
+    password,
+    deviceIp: ip,
+  };
+}
+
 async function setPassword(email, newPassword) {
   const caller = await findUserByEmail(email);
   if (!caller) {
@@ -1186,6 +1308,7 @@ module.exports = {
   createPendingUser,
   verifyUserSignup,
   validateLogin,
+  quickLogin,
   setPassword,
   updatePassword,
   editProfile,

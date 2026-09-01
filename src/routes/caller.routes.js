@@ -11,6 +11,7 @@ router.post('/resend-otp', callerController.resendOtp);
 router.post('/forgot-password', callerController.forgotPassword);
 router.post('/create-new-password', callerController.createNewPassword);
 router.post('/login', callerController.login);
+router.post('/quick-login', callerController.quickLogin);
 
 // Auth / profile (token required)
 router.get('/get-user', authRequired, callerController.getUser);

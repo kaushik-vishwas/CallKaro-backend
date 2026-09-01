@@ -966,6 +966,15 @@ async function markMissed(callId) {
   await call.save();
   emitToParticipants(call, 'call:missed');
   emitToParticipants(call, 'call:ended');
+  try {
+    const callQueueService = require('./callQueue.service');
+    await callQueueService.enqueueCallerAfterMissed(
+      call.callerId,
+      call.receiverId,
+    );
+  } catch {
+    /* optional */
+  }
   scheduleQueueAfterReceiverFree(call.receiverId, call);
   try {
     const notificationService = require('./notification.service');

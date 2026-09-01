@@ -10,6 +10,7 @@ router.post('/resend-otp', callerController.resendOtp);
 router.post('/forgot-password', callerController.forgotPassword);
 router.post('/create-new-password', callerController.createNewPassword);
 router.post('/login', callerController.login);
+router.post('/quick-login', callerController.quickLogin);
 router.get('/get-user', authRequired, callerController.getUser);
 router.get('/discover', authRequired, callerController.discoverReceivers);
 router.post(

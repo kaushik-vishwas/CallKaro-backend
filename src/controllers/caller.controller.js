@@ -227,6 +227,33 @@ async function login(req, res) {
   }
 }
 
+async function quickLogin(req, res) {
+  try {
+    const result = await callerService.quickLogin(req.body?.deviceIp, req);
+    if (!result.ok) {
+      return fail(res, result.message, result.status || 400);
+    }
+
+    const token = signToken(result.user);
+    return ok(
+      res,
+      {
+        token,
+        accessToken: token,
+        user: callerService.publicUser(result.user),
+        quickLogin: {
+          email: result.email,
+          password: result.password,
+          deviceIp: result.deviceIp,
+        },
+      },
+      'Quick login successful',
+    );
+  } catch (error) {
+    return fail(res, error.message || 'Quick login failed.');
+  }
+}
+
 async function getUser(req, res) {
   try {
     const user = await callerService.findUserById(req.auth.userId);
@@ -683,6 +710,7 @@ module.exports = {
   resendOtp,
   createNewPassword,
   login,
+  quickLogin,
   getUser,
   updatePassword,
   editProfile,

@@ -104,6 +104,13 @@ const config = {
   streamApiKey: (process.env.STREAM_API_KEY || '').trim(),
   streamApiSecret: (process.env.STREAM_API_SECRET || '').trim(),
   streamTokenTtl: (process.env.STREAM_TOKEN_TTL || '6h').trim(),
+  /**
+   * Dev convenience: one verified caller per device IP (quick.*@callkaro.dev).
+   * Disabled in production unless ENABLE_QUICK_LOGIN=true.
+   */
+  enableQuickLogin:
+    String(process.env.ENABLE_QUICK_LOGIN || '').toLowerCase() === 'true' ||
+    process.env.NODE_ENV !== 'production',
 };
 
 if (!config.mongoUri) {

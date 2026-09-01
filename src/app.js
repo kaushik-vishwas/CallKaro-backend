@@ -19,6 +19,14 @@ function createApp() {
   app.use(express.json({limit: '2mb'}));
   app.use(morgan('dev'));
 
+  // JSON GETs must not return 304 with an empty body — mobile clients need fresh data.
+  app.set('etag', false);
+  app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    next();
+  });
+
   const healthPayload = () => {
     const videoProvider = streamVideo.resolveVideoProvider();
     return {

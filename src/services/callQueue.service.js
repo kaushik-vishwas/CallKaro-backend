@@ -145,6 +145,70 @@ async function requestCallback(auth, {receiverId, reason} = {}) {
   };
 }
 
+/**
+ * When a live call rings out unanswered, queue the caller for auto-callback.
+ */
+async function enqueueCallerAfterMissed(callerId, receiverId) {
+  const cid = String(callerId || '').trim();
+  const rid = String(receiverId || '').trim();
+  if (!cid || !rid) {
+    return null;
+  }
+
+  const existing = await CallQueue.findOne({
+    callerId: cid,
+    receiverId: rid,
+    status: {$in: ['waiting', 'calling']},
+  });
+  if (existing) {
+    maybeScheduleIfReceiverAvailable(rid);
+    return existing;
+  }
+
+  const caller = await Caller.findOne({id: cid});
+  if (!caller || caller.isBlocked) {
+    return null;
+  }
+
+  const vip = isVipActive(caller);
+  let entry;
+  try {
+    entry = await CallQueue.create({
+      callerId: cid,
+      receiverId: rid,
+      reason: 'busy',
+      isVip: vip,
+      status: 'waiting',
+      callerSnapshot: {
+        name: caller.name || 'Caller',
+        avatarUrl: caller.avatarUrl || caller.profile || '',
+        level: Number(caller.level || 1),
+      },
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      const again = await CallQueue.findOne({
+        callerId: cid,
+        receiverId: rid,
+        status: {$in: ['waiting', 'calling']},
+      });
+      if (again) {
+        maybeScheduleIfReceiverAvailable(rid);
+        return again;
+      }
+    }
+    throw error;
+  }
+
+  emitQueueUpdate(rid, {
+    type: 'joined',
+    entry: publicQueueItem(entry, 0),
+  });
+
+  maybeScheduleIfReceiverAvailable(rid);
+  return entry;
+}
+
 async function cancelCallback(auth, entryId) {
   if (auth.role !== 'caller') {
     return {ok: false, message: 'Only callers can cancel a callback.', status: 403};
@@ -443,4 +507,5 @@ module.exports = {
   processNextCallback,
   completeCallbackAttempt,
   maybeScheduleIfReceiverAvailable,
+  enqueueCallerAfterMissed,
 };
