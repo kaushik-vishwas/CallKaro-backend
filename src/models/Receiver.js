@@ -49,6 +49,8 @@ const receiverSchema = new mongoose.Schema(
       required: true,
     },
     level: {type: Number, enum: [1, 2, 3], required: true},
+    /** @deprecated Free 5‑min discover uses top leaderboard rankers, not this flag. */
+    isSpecial: {type: Boolean, default: false, index: true},
     status: {
       type: String,
       enum: [
@@ -71,6 +73,19 @@ const receiverSchema = new mongoose.Schema(
     bio: {type: String, default: ''},
     languages: {type: [String], default: []},
     photos: {type: [String], default: []},
+    /**
+     * Caller-facing privacy proxy (agent-managed).
+     * When enabled, callers see these fields instead of real name/photos.
+     * Receiver app and agent "real profile" stay unchanged.
+     */
+    proxyProfile: {
+      enabled: {type: Boolean, default: false},
+      name: {type: String, default: '', trim: true},
+      bio: {type: String, default: ''},
+      photos: {type: [String], default: []},
+      videoUrl: {type: String, default: ''},
+      videoThumb: {type: String, default: ''},
+    },
     bank: {type: bankSchema, default: () => ({})},
     kyc: {type: kycSchema, default: () => ({})},
     totalHours: {type: Number, default: 0},
@@ -80,6 +95,21 @@ const receiverSchema = new mongoose.Schema(
     /** Earnings awaiting clearance (INR). */
     pendingEarnings: {type: Number, default: 0},
     totalCalls: {type: Number, default: 0},
+    /** Rank metrics (Figma Rank Improvement rules). */
+    answeredCalls: {type: Number, default: 0},
+    missedCalls: {type: Number, default: 0},
+    onlineMinutes: {type: Number, default: 0},
+    peakOnlineMinutes: {type: Number, default: 0},
+    /** Set when receiver toggles Online — used to accumulate online minutes. */
+    onlineStartedAt: {type: Date, default: null},
+    /**
+     * Today's engagement (online + talk) in minutes — IST day.
+     * Ideal profile when ≤ 90 (1.5h); otherwise non-ideal.
+     */
+    dailyEngagementMinutes: {type: Number, default: 0},
+    dailyEngagementDate: {type: String, default: ''},
+    /** Start of continuous non-idle (busy) stretch; cleared when idle again. */
+    busyStartedAt: {type: Date, default: null},
     profileViews: {type: Number, default: 0},
     followers: {type: Number, default: 0},
     isOnline: {type: Boolean, default: false},

@@ -1237,21 +1237,66 @@ function derivePresence(receiver, {busyIds, connectedIds} = {}) {
 }
 
 function coinRatesForLevel(level) {
-  if (level === 3) return {coinRate: 12, vipCoinRate: 8};
-  if (level === 2) return {coinRate: 8, vipCoinRate: 5};
-  return {coinRate: 5, vipCoinRate: 3};
+  const rates = require('../config').config.receiverCoinRatesByLevel || {};
+  const n = Number(level) || 3;
+  const base =
+    n <= 1
+      ? Math.max(1, Number(rates[1]) || 2000)
+      : n === 2
+        ? Math.max(1, Number(rates[2]) || 1800)
+        : Math.max(1, Number(rates[3]) || 1600);
+  return {
+    coinRate: base,
+    vipCoinRate: Math.max(1, Math.round(base * (1400 / 1600))),
+  };
 }
 
 async function listDiscoverReceivers(callerId) {
-  const Call = require('../models/Call');
+  const Caller = require('../models/Caller');
   const {getConnectedReceiverIds} = require('../realtime/io');
+  const {getCallerFacingIdentity} = require('./receiver.service');
+  const {scoreOf} = require('./leaderboard.service');
 
-  const receivers = await Receiver.find({status: 'active'})
-    .sort({activatedAt: -1, updatedAt: -1})
-    .select(
-      'id name age gender level status bio languages photos earnings totalCalls followers profileViews isOnline updatedAt activatedAt',
-    )
+  /** Free 5‑min window: only top leaderboard rankers (same score as receiver rank). */
+  const FREE_TOP_LIMIT = 100;
+  const caller = callerId
+    ? await Caller.findOne({id: callerId})
+        .select('welcomeTalkClaimed welcomeTalkMinutes')
+        .lean()
+    : null;
+  const freeTalkActive =
+    !caller ||
+    !Boolean(caller.welcomeTalkClaimed) ||
+    Number(caller.welcomeTalkMinutes || 0) > 0;
+
+  const selectFields =
+    'id name age gender level status bio languages photos proxyProfile earnings totalCalls totalHours followers profileViews isOnline updatedAt activatedAt onlineMinutes peakOnlineMinutes answeredCalls missedCalls';
+
+  let receivers = await Receiver.find({status: 'active'})
+    .select(selectFields)
     .lean();
+
+  if (freeTalkActive) {
+    receivers = receivers
+      .map(receiver => ({receiver, score: scoreOf(receiver)}))
+      .sort((a, b) => {
+        const scoreDiff = b.score - a.score;
+        if (scoreDiff !== 0) return scoreDiff;
+        const callsDiff =
+          (Number(b.receiver.totalCalls) || 0) -
+          (Number(a.receiver.totalCalls) || 0);
+        if (callsDiff !== 0) return callsDiff;
+        return String(a.receiver.id).localeCompare(String(b.receiver.id));
+      })
+      .slice(0, FREE_TOP_LIMIT)
+      .map(row => row.receiver);
+  } else {
+    receivers = receivers.sort((a, b) => {
+      const aAt = new Date(a.activatedAt || a.updatedAt || 0).getTime();
+      const bAt = new Date(b.activatedAt || b.updatedAt || 0).getTime();
+      return bAt - aAt;
+    });
+  }
 
   const receiverIds = receivers.map(r => r.id);
 
@@ -1267,9 +1312,7 @@ async function listDiscoverReceivers(callerId) {
 
   const mapped = await Promise.all(
     receivers.map(async receiver => {
-      const photos = await storageService.mapAccessUrls(
-        Array.isArray(receiver.photos) ? receiver.photos : [],
-      );
+      const identity = await getCallerFacingIdentity(receiver);
       const rates = coinRatesForLevel(receiver.level);
       const languages = Array.isArray(receiver.languages)
         ? receiver.languages
@@ -1277,16 +1320,18 @@ async function listDiscoverReceivers(callerId) {
 
       return {
         id: receiver.id,
-        name: receiver.name,
+        name: identity.name,
         age: receiver.age,
         location: languages[0] || 'India',
-        imageUrl: photos[0] || '',
-        images: photos,
+        imageUrl: identity.imageUrl || '',
+        images: identity.photos,
+        videoUrl: identity.videoUrl || '',
+        videoThumb: identity.videoThumb || '',
         status: derivePresence(receiver, {busyIds, connectedIds}),
         isVip: Number(receiver.level) >= 3,
         isVerified: true,
         languages,
-        bio: receiver.bio || '',
+        bio: identity.bio || '',
         level: receiver.level,
         followers: Math.max(0, Number(receiver.followers) || 0),
         profileViews: Math.max(0, Number(receiver.profileViews) || 0),

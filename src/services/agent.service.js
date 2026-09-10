@@ -23,6 +23,7 @@ function publicAgent(agent) {
     phone: agent.phone || '',
     agentCode: agent.agentCode,
     avatarUrl: agent.avatarUrl || '',
+    earnings: Number(agent.earnings || 0),
   };
 }
 
@@ -84,7 +85,7 @@ function generateLoginEmail(name, id) {
   return `${slug}.${short}@callkaro.com`;
 }
 
-function publicReceiverListItem(receiver) {
+function publicReceiverListItem(receiver, rank = null) {
   const hours = Number(receiver.totalHours) || 0;
   return {
     id: receiver.id,
@@ -94,6 +95,7 @@ function publicReceiverListItem(receiver) {
     statusKey: receiver.status,
     totalHours: Number(hours.toFixed(2)),
     earnings: receiver.earnings || 0,
+    rank: rank == null ? null : Number(rank),
   };
 }
 
@@ -120,6 +122,14 @@ async function publicReceiverProfile(receiver) {
   );
   const videoUrl = await storageService.toAccessUrl(kyc.videoUrl || '');
 
+  const proxy = receiver.proxyProfile || {};
+  const proxyPhotosRaw = Array.isArray(proxy.photos) ? proxy.photos : [];
+  const proxyPhotos = await storageService.mapAccessUrls(proxyPhotosRaw);
+  const proxyVideoUrl = await storageService.toAccessUrl(proxy.videoUrl || '');
+  const proxyVideoThumb = await storageService.toAccessUrl(
+    proxy.videoThumb || proxyPhotosRaw[0] || '',
+  );
+
   return {
     ...publicReceiverListItem(receiver),
     age: receiver.age,
@@ -140,6 +150,14 @@ async function publicReceiverProfile(receiver) {
       videoThumb: videoThumb || '',
       videoUrl: videoUrl || '',
       documents,
+    },
+    proxyProfile: {
+      enabled: Boolean(proxy.enabled),
+      name: proxy.name || '',
+      bio: proxy.bio || '',
+      photos: proxyPhotos,
+      videoUrl: proxyVideoUrl || '',
+      videoThumb: proxyVideoThumb || '',
     },
   };
 }
@@ -251,7 +269,7 @@ async function listReceivers(agentId, {status, q} = {}) {
     };
   } else if (status === 'Pending Review') filter.status = 'pending_review';
 
-  let receivers = await Receiver.find(filter).sort({createdAt: -1}).lean();
+  let receivers = await Receiver.find(filter).lean();
 
   if (q && String(q).trim()) {
     const needle = String(q).trim().toLowerCase();
@@ -262,7 +280,18 @@ async function listReceivers(agentId, {status, q} = {}) {
     );
   }
 
-  return receivers.map(publicReceiverListItem);
+  const {scoreOf} = require('./leaderboard.service');
+  receivers = [...receivers].sort((a, b) => {
+    const scoreDiff = scoreOf(b) - scoreOf(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    const earningsDiff = (Number(b.earnings) || 0) - (Number(a.earnings) || 0);
+    if (earningsDiff !== 0) return earningsDiff;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+
+  return receivers.map((receiver, index) =>
+    publicReceiverListItem(receiver, index + 1),
+  );
 }
 
 async function listPendingApprovals(agentId) {
@@ -344,6 +373,78 @@ async function listCredentialReceivers(agentId) {
     status: STATUS_LABEL[r.status] || 'Inactive',
     statusKey: r.status,
   }));
+}
+
+/**
+ * Agent-managed caller-facing proxy (privacy alias).
+ * Real receiver profile used by receiver app stays unchanged.
+ */
+async function updateProxyProfile(agentId, receiverId, payload = {}) {
+  const receiver = await getReceiverForAgent(agentId, receiverId);
+  if (!receiver) return {ok: false, message: 'Receiver not found.', status: 404};
+
+  if (!receiver.proxyProfile) {
+    receiver.proxyProfile = {
+      enabled: false,
+      name: '',
+      bio: '',
+      photos: [],
+      videoUrl: '',
+      videoThumb: '',
+    };
+  }
+
+  if (typeof payload.enabled === 'boolean') {
+    receiver.proxyProfile.enabled = payload.enabled;
+  }
+  if (payload.name !== undefined) {
+    receiver.proxyProfile.name = String(payload.name || '')
+      .trim()
+      .slice(0, 80);
+  }
+  if (payload.bio !== undefined) {
+    receiver.proxyProfile.bio = String(payload.bio || '')
+      .trim()
+      .slice(0, 250);
+  }
+  if (Array.isArray(payload.photos)) {
+    receiver.proxyProfile.photos = payload.photos
+      .map(url => storageService.toStorageUrl(url))
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+  if (payload.videoUrl !== undefined) {
+    receiver.proxyProfile.videoUrl =
+      storageService.toStorageUrl(payload.videoUrl || '') || '';
+  }
+  if (payload.videoThumb !== undefined) {
+    receiver.proxyProfile.videoThumb =
+      storageService.toStorageUrl(payload.videoThumb || '') || '';
+  }
+
+  if (receiver.proxyProfile.enabled) {
+    if (!String(receiver.proxyProfile.name || '').trim()) {
+      return {
+        ok: false,
+        message: 'Proxy display name is required when enabled.',
+        status: 400,
+      };
+    }
+    if (
+      !Array.isArray(receiver.proxyProfile.photos) ||
+      !receiver.proxyProfile.photos.length
+    ) {
+      return {
+        ok: false,
+        message: 'At least one proxy photo is required when enabled.',
+        status: 400,
+      };
+    }
+  }
+
+  receiver.markModified('proxyProfile');
+  await receiver.save();
+  return {ok: true, receiver};
 }
 
 /**
@@ -484,14 +585,15 @@ async function getAgentAnalytics(agentId) {
     });
   }
 
+  const {scoreOf} = require('./leaderboard.service');
   const topPerformers = [...receivers]
-    .sort(
-      (a, b) =>
-        (Number(b.earnings) || 0) - (Number(a.earnings) || 0) ||
-        (Number(b.totalCalls) || 0) - (Number(a.totalCalls) || 0),
-    )
+    .sort((a, b) => {
+      const scoreDiff = scoreOf(b) - scoreOf(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      return (Number(b.earnings) || 0) - (Number(a.earnings) || 0);
+    })
     .slice(0, 10)
-    .map(publicReceiverListItem);
+    .map((receiver, index) => publicReceiverListItem(receiver, index + 1));
 
   return {
     stats: [
@@ -553,6 +655,7 @@ module.exports = {
   getAgentAnalytics,
   getCredentials,
   listCredentialReceivers,
+  updateProxyProfile,
   submitForReview,
   buildOnboardingLink,
 };

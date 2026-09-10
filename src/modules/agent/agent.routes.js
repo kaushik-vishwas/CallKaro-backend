@@ -25,6 +25,11 @@ router.get(
 router.get('/receivers', agentAuthRequired, agentController.listReceivers);
 router.post('/receivers', agentAuthRequired, agentController.createReceiver);
 router.get('/receivers/:id', agentAuthRequired, agentController.getReceiver);
+router.patch(
+  '/receivers/:id/proxy-profile',
+  agentAuthRequired,
+  agentController.updateProxyProfile,
+);
 router.post(
   '/receivers/:id/submit-for-review',
   agentAuthRequired,

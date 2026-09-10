@@ -19,9 +19,24 @@ function isVipActive(caller) {
   );
 }
 
-function resolveCoinRate(caller) {
-  const base = BASE_COIN_RATE();
-  return isVipActive(caller) ? Math.max(1, Math.round(base * (1400 / 1600))) : base;
+function coinRateForReceiverLevel(level) {
+  const rates = config.receiverCoinRatesByLevel || {};
+  const n = Number(level) || 3;
+  if (n <= 1) return Math.max(1, Number(rates[1]) || 2000);
+  if (n === 2) return Math.max(1, Number(rates[2]) || 1800);
+  return Math.max(1, Number(rates[3]) || 1600);
+}
+
+function resolveCoinRate(caller, receiverLevel) {
+  const base = coinRateForReceiverLevel(receiverLevel);
+  return isVipActive(caller)
+    ? Math.max(1, Math.round(base * (1400 / 1600)))
+    : base;
+}
+
+function receiverSharePerMinute(receiverLevel) {
+  const charge = coinRateForReceiverLevel(receiverLevel);
+  return Math.max(1, Math.round(charge / 2));
 }
 
 function remainingMinutesForCaller(caller, coinRate) {
@@ -52,10 +67,14 @@ function mapGifts(list) {
 
 function publicCall(doc, {includeProvider = true, caller = null} = {}) {
   const row = doc.toObject ? doc.toObject() : doc;
-  const baseRate = BASE_COIN_RATE();
-  const rate = Number(row.coinRatePerMinute || baseRate);
+  const rate = Number(row.coinRatePerMinute || BASE_COIN_RATE());
+  const vip =
+    Boolean(row.callerSnapshot?.isVip) ||
+    (caller ? isVipActive(caller) : false);
+  const baseRate = vip
+    ? Math.max(1, Math.round(rate * (1600 / 1400)))
+    : rate;
   const billed = Number(row.billedMinutes || 0);
-  const vip = rate < baseRate;
   const gifts = mapGifts(row.gifts);
   const giftsCoinsCharged = Number(
     row.giftsCoinsCharged != null
@@ -88,6 +107,7 @@ function publicCall(doc, {includeProvider = true, caller = null} = {}) {
     walletCoinsUsed: row.walletCoinsUsed || 0,
     vipSavedCoins: vip ? Math.max(0, (baseRate - rate) * billed) : 0,
     endReason: row.endReason || null,
+    redirectedFrom: row.providerPayload?.redirectedFrom || null,
     caller: row.callerSnapshot || {},
     receiver: row.receiverSnapshot || {},
   };
@@ -227,6 +247,12 @@ async function forceCloseCall(call, endReason) {
   }
   if (wasRinging) {
     emitToParticipants(call, 'call:missed');
+    if (call.receiverId) {
+      Receiver.updateOne(
+        {id: call.receiverId},
+        {$inc: {missedCalls: 1}},
+      ).catch(() => undefined);
+    }
     try {
       const notificationService = require('./notification.service');
       const callerName = call.callerSnapshot?.name || 'A caller';
@@ -242,6 +268,9 @@ async function forceCloseCall(call, endReason) {
   }
   emitToParticipants(call, 'call:ended');
   scheduleQueueAfterReceiverFree(call.receiverId, call);
+  require('./receiverRouting.service')
+    .clearReceiverBusyIfIdle(call.receiverId)
+    .catch(() => undefined);
   return call;
 }
 async function sweepStaleActiveCalls({receiverId, callerId} = {}) {
@@ -449,12 +478,24 @@ function chargeOneMinute(caller, coinRate, call) {
 }
 
 /**
- * Credit receiver for billed minutes at internal 800 coins/min → INR.
+ * Credit receiver for billed minutes at level-based share (50% of category rate) → INR.
  * Mutates call counters; call must be saved by caller.
  */
 async function syncReceiverCallEarnings(call) {
   const {config} = require('../config');
-  const share = Math.max(0, Number(config.receiverCoinsPerVideoMinute) || 800);
+  let share = Math.max(0, Number(config.receiverCoinsPerVideoMinute) || 800);
+  if (call.receiverId) {
+    try {
+      const receiver = await Receiver.findOne({id: call.receiverId})
+        .select('level')
+        .lean();
+      if (receiver) {
+        share = receiverSharePerMinute(receiver.level);
+      }
+    } catch {
+      // keep fallback share
+    }
+  }
   const expected = Math.max(0, Number(call.billedMinutes) || 0) * share;
   const already = Math.max(0, Number(call.receiverCoinsCredited) || 0);
   const delta = expected - already;
@@ -520,6 +561,7 @@ async function startCall(auth, receiverId) {
   }
   return createRingingCall(auth.userId, String(receiverId || '').trim(), {
     fulfillQueue: true,
+    allowFailover: true,
   });
 }
 
@@ -530,6 +572,7 @@ async function createCallbackCall(callerId, receiverId, {queueId = null} = {}) {
   return createRingingCall(String(callerId || '').trim(), String(receiverId || '').trim(), {
     fulfillQueue: false,
     isCallback: true,
+    allowFailover: false,
     queueId,
   });
 }
@@ -537,7 +580,13 @@ async function createCallbackCall(callerId, receiverId, {queueId = null} = {}) {
 async function createRingingCall(
   callerId,
   rid,
-  {fulfillQueue = true, isCallback = false, queueId = null} = {},
+  {
+    fulfillQueue = true,
+    isCallback = false,
+    queueId = null,
+    allowFailover = false,
+    redirectedFrom = null,
+  } = {},
 ) {
   if (!callerId || !rid) {
     const err = new Error('callerId and receiverId are required.');
@@ -558,17 +607,7 @@ async function createRingingCall(
 
   await sweepStaleActiveCalls({receiverId: rid});
 
-  const receiverBusy = await Call.findOne({
-    receiverId: rid,
-    status: {$in: ACTIVE_STATUSES},
-  });
-  if (receiverBusy) {
-    const err = new Error('Receiver is busy on another call.');
-    err.statusCode = 409;
-    err.code = 'receiver_busy';
-    throw err;
-  }
-
+  const routing = require('./receiverRouting.service');
   const [caller, receiver] = await Promise.all([
     Caller.findOne({id: callerId}),
     Receiver.findOne({id: rid}),
@@ -602,20 +641,77 @@ async function createRingingCall(
     err.statusCode = 404;
     throw err;
   }
-  if (!receiver.isOnline) {
-    const err = new Error('Receiver is currently Offline');
-    err.statusCode = 409;
-    err.code = 'receiver_offline';
-    throw err;
-  }
 
   const {getConnectedReceiverIds} = require('../realtime/io');
   const connectedIds = getConnectedReceiverIds();
-  if (connectedIds instanceof Set && !connectedIds.has(rid)) {
-    const err = new Error('Receiver is currently Offline');
-    err.statusCode = 409;
-    err.code = 'receiver_offline';
-    throw err;
+  const socketOnline =
+    !(connectedIds instanceof Set) || connectedIds.has(rid);
+  const targetOnline = Boolean(receiver.isOnline) && socketOnline;
+
+  const receiverBusy = await Call.findOne({
+    receiverId: rid,
+    status: {$in: ACTIVE_STATUSES},
+  });
+
+  // Ideal-profile failover (profile/manual calls only — not random/callback).
+  if (allowFailover && routing.isIdealProfile(receiver)) {
+    if (!targetOnline) {
+      const altId = await routing.pickIdleSameLevelReceiver(receiver.level, {
+        excludeId: rid,
+        callerId,
+        nonIdealOnly: false,
+      });
+      if (altId) {
+        return createRingingCall(callerId, altId, {
+          fulfillQueue,
+          isCallback: false,
+          allowFailover: false,
+          redirectedFrom: rid,
+          queueId,
+        });
+      }
+      const err = new Error('Receiver is currently Offline');
+      err.statusCode = 409;
+      err.code = 'receiver_offline';
+      throw err;
+    }
+
+    if (receiverBusy) {
+      const busyMs = await routing.continuousBusyMs(rid);
+      if (busyMs >= routing.BUSY_FAILOVER_MS) {
+        const altId = await routing.pickIdleSameLevelReceiver(receiver.level, {
+          excludeId: rid,
+          callerId,
+          nonIdealOnly: true,
+        });
+        if (altId) {
+          return createRingingCall(callerId, altId, {
+            fulfillQueue,
+            isCallback: false,
+            allowFailover: false,
+            redirectedFrom: rid,
+            queueId,
+          });
+        }
+      }
+      const err = new Error('Receiver is busy on another call.');
+      err.statusCode = 409;
+      err.code = 'receiver_busy';
+      throw err;
+    }
+  } else {
+    if (receiverBusy) {
+      const err = new Error('Receiver is busy on another call.');
+      err.statusCode = 409;
+      err.code = 'receiver_busy';
+      throw err;
+    }
+    if (!targetOnline) {
+      const err = new Error('Receiver is currently Offline');
+      err.statusCode = 409;
+      err.code = 'receiver_offline';
+      throw err;
+    }
   }
 
   try {
@@ -651,7 +747,7 @@ async function createRingingCall(
     // ChatBlock model missing — ignore
   }
 
-  const coinRate = resolveCoinRate(caller);
+  const coinRate = resolveCoinRate(caller, receiver.level);
   const afford = await assertCanAffordMinute(caller, coinRate);
   if (!afford.ok) {
     const err = new Error(
@@ -666,11 +762,9 @@ async function createRingingCall(
   const storageService = require('./storage.service');
   const videoProvider = streamVideo.resolveVideoProvider();
 
-  const [receiverAvatar] = await storageService.mapAccessUrls(
-    Array.isArray(receiver.photos) && receiver.photos[0]
-      ? [receiver.photos[0]]
-      : [],
-  );
+  const {getCallerFacingIdentity} = require('./receiver.service');
+  const callerFacing = await getCallerFacingIdentity(receiver);
+  const receiverAvatar = callerFacing.imageUrl || '';
   const [callerAvatar] = await storageService.mapAccessUrls(
     caller.avatarUrl ? [caller.avatarUrl] : [],
   );
@@ -684,6 +778,7 @@ async function createRingingCall(
       mode: videoProvider,
       isCallback: Boolean(isCallback),
       queueId: queueId || null,
+      redirectedFrom: redirectedFrom || null,
     },
     coinRatePerMinute: coinRate,
     callerSnapshot: {
@@ -696,7 +791,7 @@ async function createRingingCall(
       ),
     },
     receiverSnapshot: {
-      name: receiver.name || 'Receiver',
+      name: callerFacing.name || 'Receiver',
       avatarUrl: receiverAvatar || '',
       age: receiver.age || null,
     },
@@ -706,9 +801,12 @@ async function createRingingCall(
     ...streamVideo.buildProviderPayload(call.id),
     isCallback: Boolean(isCallback),
     queueId: queueId || null,
+    redirectedFrom: redirectedFrom || null,
   };
   call.markModified('providerPayload');
   await call.save();
+
+  await routing.markReceiverBusy(rid).catch(() => undefined);
 
   if (fulfillQueue) {
     try {
@@ -824,7 +922,10 @@ async function startRandomCall(auth) {
   const maxAttempts = Math.min(available.length, 5);
   for (let i = 0; i < maxAttempts; i += 1) {
     try {
-      return await startCall(auth, available[i].id);
+      return await createRingingCall(auth.userId, available[i].id, {
+        fulfillQueue: true,
+        allowFailover: false,
+      });
     } catch (error) {
       lastError = error;
       if (
@@ -889,6 +990,13 @@ async function acceptCall(auth, callId) {
   call.lastHeartbeatAt = now;
   await call.save();
 
+  if (isReceiver && call.receiverId) {
+    Receiver.updateOne(
+      {id: call.receiverId},
+      {$inc: {answeredCalls: 1}},
+    ).catch(() => undefined);
+  }
+
   // First minute charged when call connects.
   const caller = await Caller.findOne({id: call.callerId});
   if (caller) {
@@ -949,9 +1057,18 @@ async function rejectCall(auth, callId) {
   call.endedAt = new Date();
   call.endReason = 'rejected';
   await call.save();
+  if (isReceiver && call.receiverId) {
+    Receiver.updateOne(
+      {id: call.receiverId},
+      {$inc: {missedCalls: 1}},
+    ).catch(() => undefined);
+  }
   emitToParticipants(call, 'call:rejected');
   emitToParticipants(call, 'call:ended');
   scheduleQueueAfterReceiverFree(call.receiverId, call);
+  require('./receiverRouting.service')
+    .clearReceiverBusyIfIdle(call.receiverId)
+    .catch(() => undefined);
   return publicCallHydrated(call);
 }
 
@@ -964,6 +1081,12 @@ async function markMissed(callId) {
   call.endedAt = new Date();
   call.endReason = 'missed';
   await call.save();
+  if (call.receiverId) {
+    Receiver.updateOne(
+      {id: call.receiverId},
+      {$inc: {missedCalls: 1}},
+    ).catch(() => undefined);
+  }
   emitToParticipants(call, 'call:missed');
   emitToParticipants(call, 'call:ended');
   try {
@@ -991,6 +1114,9 @@ async function markMissed(callId) {
   } catch {
     /* optional */
   }
+  require('./receiverRouting.service')
+    .clearReceiverBusyIfIdle(call.receiverId)
+    .catch(() => undefined);
   return publicCallHydrated(call);
 }
 
@@ -1080,6 +1206,9 @@ async function endCall(auth, callId, reason) {
 
   emitToParticipants(call, 'call:ended');
   scheduleQueueAfterReceiverFree(call.receiverId, call);
+  require('./receiverRouting.service')
+    .clearReceiverBusyIfIdle(call.receiverId)
+    .catch(() => undefined);
   return attachCallerBalance(call);
 }
 
@@ -1123,6 +1252,9 @@ async function heartbeat(auth, callId) {
         await caller.save();
         await call.save();
         emitToParticipants(call, 'call:ended', {forceEnd: true});
+        require('./receiverRouting.service')
+          .clearReceiverBusyIfIdle(call.receiverId)
+          .catch(() => undefined);
         return publicCallHydrated(call);
       }
     }

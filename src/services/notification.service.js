@@ -273,11 +273,19 @@ async function notifyFollowersReceiverOnline(receiver) {
   if (!follows.length) {
     return;
   }
-  const name = receiver.name || 'Your saved receiver';
-  const avatarUrl =
+  let name = receiver.name || 'Your saved receiver';
+  let avatarUrl =
     (Array.isArray(receiver.photos) && receiver.photos[0]) ||
     receiver.avatarUrl ||
     '';
+  try {
+    const {getCallerFacingIdentity} = require('./receiver.service');
+    const identity = await getCallerFacingIdentity(receiver);
+    name = identity.name || name;
+    avatarUrl = identity.imageUrl || avatarUrl;
+  } catch {
+    /* keep real fallback */
+  }
   await Promise.all(
     follows.map(row =>
       createForCaller({
@@ -300,6 +308,12 @@ function formatInr(amount) {
   return `₹${Math.round(Number(amount) || 0).toLocaleString('en-IN')}`;
 }
 
+function formatCoinsFromInr(amountInr) {
+  const {inrToCoins} = require('./earnings.service');
+  const coins = inrToCoins(amountInr);
+  return `${Math.round(coins).toLocaleString('en-IN')} coins`;
+}
+
 async function notifyReceiverEarnings({
   receiverId,
   amountInr,
@@ -316,7 +330,7 @@ async function notifyReceiverEarnings({
     receiverId,
     type: 'earnings_credit',
     title: isChat ? 'Chat earnings credited' : 'Call earnings credited',
-    body: `${formatInr(amount)} added to your wallet from ${
+    body: `${formatCoinsFromInr(amount)} added to your wallet from ${
       isChat ? 'chat' : 'your video call'
     }.`,
     data: {

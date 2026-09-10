@@ -444,7 +444,23 @@ async function setOnlineStatus(receiverId, isOnline) {
       status: 400,
     };
   }
-  receiver.isOnline = Boolean(isOnline);
+
+  const nextOnline = Boolean(isOnline);
+  const wasOnline = Boolean(receiver.isOnline);
+
+  if (nextOnline && !wasOnline) {
+    receiver.onlineStartedAt = new Date();
+  } else if (!nextOnline && wasOnline) {
+    try {
+      const leaderboardService = require('./leaderboard.service');
+      await leaderboardService.accumulateOnlineSession(receiver);
+    } catch (err) {
+      console.error('[receiver.online.accumulate]', err.message || err);
+      receiver.onlineStartedAt = null;
+    }
+  }
+
+  receiver.isOnline = nextOnline;
   await receiver.save();
   // Clear leftover ringing/connected rows so caller feed cannot stick on Busy.
   // Always force-close: toggle is from dashboard/profile, not an in-call UI.
@@ -489,6 +505,14 @@ async function logout(receiverId) {
   const receiver = await findById(receiverId);
   if (!receiver) {
     return {ok: false, message: 'Receiver not found.', status: 404};
+  }
+  if (receiver.isOnline) {
+    try {
+      const leaderboardService = require('./leaderboard.service');
+      await leaderboardService.accumulateOnlineSession(receiver);
+    } catch {
+      receiver.onlineStartedAt = null;
+    }
   }
   receiver.isOnline = false;
   await receiver.save();
@@ -640,7 +664,53 @@ async function requestAccountDeletion(receiverId, reason = '') {
   return {ok: true, receiver};
 }
 
+/**
+ * Caller-facing identity: proxy when enabled, else real profile.
+ * Receiver app / agent real profile stay unchanged.
+ */
+async function getCallerFacingIdentity(receiver) {
+  const plain = plainDoc(receiver);
+  const proxy = plain.proxyProfile || {};
+  const enabled = Boolean(proxy.enabled);
+  const proxyName = String(proxy.name || '').trim();
+  const proxyPhotos = Array.isArray(proxy.photos)
+    ? proxy.photos.filter(Boolean)
+    : [];
+  const realPhotos = Array.isArray(plain.photos) ? plain.photos.filter(Boolean) : [];
+
+  const name = enabled && proxyName ? proxyName : plain.name || 'Receiver';
+  const proxyBio = String(proxy.bio || '').trim();
+  const bio =
+    enabled && proxyBio
+      ? proxyBio
+      : String(plain.bio || '').trim();
+  const rawPhotos = enabled && proxyPhotos.length ? proxyPhotos : realPhotos;
+  const photos = await storageService.mapAccessUrls(rawPhotos);
+  const videoUrlRaw = enabled && proxy.videoUrl ? proxy.videoUrl : '';
+  const videoThumbRaw =
+    enabled && proxy.videoThumb
+      ? proxy.videoThumb
+      : photos[0] || '';
+  const [videoUrl, videoThumb] = await Promise.all([
+    videoUrlRaw ? storageService.toAccessUrl(videoUrlRaw) : Promise.resolve(''),
+    videoThumbRaw ? storageService.toAccessUrl(videoThumbRaw) : Promise.resolve(''),
+  ]);
+
+  return {
+    name,
+    bio,
+    photos,
+    imageUrl: photos[0] || '',
+    videoUrl: videoUrl || '',
+    videoThumb: videoThumb || photos[0] || '',
+    usingProxy: Boolean(
+      enabled && (proxyName || proxyBio || proxyPhotos.length || videoUrlRaw),
+    ),
+  };
+}
+
 module.exports = {
+  getCallerFacingIdentity,
   publicOnboardingReceiver,
   publicReceiverAuth,
   publicReceiverAppProfile,

@@ -26,12 +26,23 @@ const config = {
   /** Daily check-in free coins (separate from wallet). 1600 coins = 1 min video. */
   dailyCheckInCoins: Number(process.env.DAILY_CHECKIN_COINS || 1600),
   dailyCheckInDays: Number(process.env.DAILY_CHECKIN_DAYS || 7),
+  /** Fallback caller charge when receiver level is unknown. */
   rewardCoinsPerVideoMinute: Number(
     process.env.REWARD_COINS_PER_VIDEO_MINUTE || 1600,
   ),
   /**
-   * Receiver share units per video minute (internal).
-   * Converted to INR via coinsPer100Inr — never shown as coins in receiver UI.
+   * Caller charge / category rate by receiver level (coins per minute).
+   * Level 1 = 2000, Level 2 = 1800, Level 3 = 1600.
+   */
+  receiverCoinRatesByLevel: {
+    1: Number(process.env.RECEIVER_COIN_RATE_LEVEL_1 || 2000),
+    2: Number(process.env.RECEIVER_COIN_RATE_LEVEL_2 || 1800),
+    3: Number(process.env.RECEIVER_COIN_RATE_LEVEL_3 || 1600),
+  },
+  /**
+   * Receiver share units per video minute (internal fallback).
+   * Prefer level-based share = 50% of category rate when level is known.
+   * Converted to INR via coinsPer100Inr for wallet/withdraw.
    */
   receiverCoinsPerVideoMinute: Number(
     process.env.RECEIVER_COINS_PER_VIDEO_MINUTE || 800,

@@ -98,21 +98,19 @@ async function mapConversationForViewer(conversation, viewerRole) {
 
   if (viewerRole === 'caller') {
     const receiver = await Receiver.findOne({id: otherId})
-      .select('name age photos isOnline status chatLastSeenAt')
+      .select('name age photos proxyProfile isOnline status chatLastSeenAt')
       .lean();
     if (receiver) {
-      name = receiver.name;
       age = Number(receiver.age) || 0;
-      const rawPhotos = Array.isArray(receiver.photos) ? receiver.photos : [];
-      // Prefer first photo immediately; signing is best-effort and must not block chat.
-      avatarUrl = rawPhotos[0] || '';
       try {
-        const photos = await storageService.mapAccessUrls(rawPhotos.slice(0, 1));
-        if (photos[0]) {
-          avatarUrl = photos[0];
-        }
+        const {getCallerFacingIdentity} = require('./receiver.service');
+        const identity = await getCallerFacingIdentity(receiver);
+        name = identity.name;
+        avatarUrl = identity.imageUrl || '';
       } catch {
-        /* keep raw URL */
+        name = receiver.name;
+        const rawPhotos = Array.isArray(receiver.photos) ? receiver.photos : [];
+        avatarUrl = rawPhotos[0] || '';
       }
       // Discover/chat Online = I'm Online switch ON + live socket (or recent ping).
       online =

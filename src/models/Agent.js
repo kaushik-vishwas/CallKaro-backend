@@ -19,6 +19,8 @@ const agentSchema = new mongoose.Schema(
     avatarUrl: {type: String, default: ''},
     passwordHash: {type: String, required: true},
     isActive: {type: Boolean, default: true},
+    /** Cumulative agent share of receiver INR earnings (20%). */
+    earnings: {type: Number, default: 0},
   },
   {timestamps: true, collection: 'agents'},
 );

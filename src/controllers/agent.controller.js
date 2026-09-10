@@ -212,6 +212,25 @@ async function submitForReview(req, res) {
   }
 }
 
+async function updateProxyProfile(req, res) {
+  try {
+    const result = await agentService.updateProxyProfile(
+      req.auth.agentId,
+      req.params.id,
+      req.body || {},
+    );
+    if (!result.ok) return fail(res, result.message, result.status || 400);
+    return ok(
+      res,
+      {receiver: await agentService.publicReceiverProfile(result.receiver)},
+      'Proxy profile updated',
+    );
+  } catch (error) {
+    console.error('[agent.updateProxyProfile]', error);
+    return fail(res, 'Failed to update proxy profile.', 500);
+  }
+}
+
 module.exports = {
   login,
   me,
@@ -226,4 +245,5 @@ module.exports = {
   getCredentials,
   listCredentials,
   submitForReview,
+  updateProxyProfile,
 };

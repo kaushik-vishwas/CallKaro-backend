@@ -23,6 +23,12 @@ function listLanIpv4() {
 async function start() {
   await connectMongo();
   await ensureDemoAdmin();
+  try {
+    const earningsService = require('./services/earnings.service');
+    await earningsService.migrateLegacyReceiverInrSplit();
+  } catch (error) {
+    console.error('[earnings] legacy split migration failed:', error.message || error);
+  }
 
   const app = createApp();
   const server = http.createServer(app);

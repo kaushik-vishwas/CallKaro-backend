@@ -227,20 +227,29 @@ async function getWalletSummary(receiverId) {
     .map(({createdAt, ...rest}) => rest);
 
   const maxWithdrawable = Math.max(0, balanceInr - MIN_BALANCE_INR);
+  const {inrToCoins} = require('./earnings.service');
 
   return {
     ok: true,
     wallet: {
       balanceInr: Math.round(balanceInr),
+      balanceCoins: inrToCoins(balanceInr),
       pendingEarnings: Math.round(pendingEarnings),
+      pendingCoins: inrToCoins(pendingEarnings),
       minBalanceInr: MIN_BALANCE_INR,
       minWithdrawInr: MIN_WITHDRAW_INR,
       maxWithdrawable: Math.round(maxWithdrawable),
       feeRate: FEE_RATE,
       nextWithdrawDays: 0,
       bank: publicBank(receiver),
-      breakdown,
-      transactions,
+      breakdown: breakdown.map(item => ({
+        ...item,
+        amountCoins: inrToCoins(item.amountInr),
+      })),
+      transactions: transactions.map(tx => ({
+        ...tx,
+        amountCoins: inrToCoins(tx.amountInr),
+      })),
       quickAmounts: [2000, 5000, 10000].filter(v => v <= maxWithdrawable),
     },
   };

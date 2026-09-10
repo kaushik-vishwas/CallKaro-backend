@@ -105,6 +105,16 @@ function toListItem(receiver, agent, rank, topPerformer) {
       : `#${agent.agentCode}`
     : '';
 
+  let engagementMinutesToday = 0;
+  let idealProfile = false;
+  try {
+    const routing = require('./receiverRouting.service');
+    engagementMinutesToday = routing.effectiveEngagementMinutes(receiver);
+    idealProfile = routing.isIdealProfile(receiver);
+  } catch {
+    /* optional */
+  }
+
   return {
     id: receiver.id,
     code: receiverCode(receiver),
@@ -128,6 +138,9 @@ function toListItem(receiver, agent, rank, topPerformer) {
     statusKey: receiver.status,
     presence: derivePresence(receiver),
     topPerformer: Boolean(topPerformer),
+    level: Number(receiver.level) || 1,
+    idealProfile,
+    engagementMinutesToday,
     createdAt: receiver.createdAt,
     updatedAt: receiver.updatedAt,
   };
@@ -192,6 +205,10 @@ async function listReceivers({
     items = items.filter(item => item.presence === 'offline');
   } else if (tab === 'top') {
     items = items.filter(item => item.topPerformer);
+  } else if (tab === 'ideal') {
+    items = items.filter(
+      item => item.idealProfile && item.statusKey === 'active',
+    );
   }
 
   // Re-rank after tab filter for display consistency
