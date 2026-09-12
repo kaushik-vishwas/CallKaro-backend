@@ -107,6 +107,25 @@ const config = {
   s3SignedUrlExpires: Number(process.env.AWS_S3_SIGNED_URL_EXPIRES || 604800),
 
   /**
+   * KYC face de-duplication (AWS Rekognition Face Collection).
+   * Only runs on receiver onboarding video KYC — other flows untouched.
+   */
+  rekognitionFaceDedup:
+    String(process.env.AWS_REKOGNITION_FACE_DEDUP || 'true').toLowerCase() !==
+    'false',
+  rekognitionCollectionId: (
+    process.env.AWS_REKOGNITION_COLLECTION_ID || 'callkaro-receivers'
+  ).trim(),
+  rekognitionFaceMatchThreshold: Number(
+    process.env.AWS_REKOGNITION_FACE_MATCH_THRESHOLD || 95,
+  ),
+  rekognitionRegion: (
+    process.env.AWS_REKOGNITION_REGION ||
+    process.env.AWS_S3_REGION ||
+    'ap-south-1'
+  ).trim(),
+
+  /**
    * Video calling media provider.
    * VIDEO_CALL_PROVIDER=auto|mock|getstream
    * auto = use GetStream when STREAM_API_KEY + STREAM_API_SECRET are set.

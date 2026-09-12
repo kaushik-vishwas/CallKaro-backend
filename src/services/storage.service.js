@@ -195,6 +195,23 @@ async function deleteFile(key) {
   );
 }
 
+/** Read object bytes from S3 (for Rekognition, etc.). */
+async function getObjectBuffer(urlOrKey) {
+  const key = extractKey(urlOrKey);
+  if (!key || !config.s3Bucket) {
+    throw new Error('Invalid storage key for download.');
+  }
+  const client = getS3Client();
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+    }),
+  );
+  const bytes = await response.Body.transformToByteArray();
+  return Buffer.from(bytes);
+}
+
 async function getSignedDownloadUrl(key, expiresInSeconds = config.s3SignedUrlExpires) {
   const client = getS3Client();
   return getSignedUrl(
@@ -214,6 +231,7 @@ function isStorageConfigured() {
 module.exports = {
   uploadFile,
   deleteFile,
+  getObjectBuffer,
   getSignedDownloadUrl,
   publicUrl,
   extractKey,

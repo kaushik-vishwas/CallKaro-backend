@@ -28,6 +28,8 @@ const kycSchema = new mongoose.Schema(
   {
     videoUrl: {type: String, default: ''},
     videoThumb: {type: String, default: ''},
+    /** Face still used for Rekognition (from KYC video frame). */
+    faceImageUrl: {type: String, default: ''},
     documents: {type: [kycDocumentSchema], default: []},
   },
   {_id: false},
@@ -88,6 +90,9 @@ const receiverSchema = new mongoose.Schema(
     },
     bank: {type: bankSchema, default: () => ({})},
     kyc: {type: kycSchema, default: () => ({})},
+    /** AWS Rekognition FaceId from KYC video face frame. */
+    faceId: {type: String, default: '', index: true},
+    faceIndexedAt: {type: Date, default: null},
     totalHours: {type: Number, default: 0},
     earnings: {type: Number, default: 0},
     /** Available wallet balance (INR). */

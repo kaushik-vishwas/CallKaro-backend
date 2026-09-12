@@ -66,6 +66,9 @@ async function publicOnboardingReceiver(receiver) {
   const videoThumb = await storageService.toAccessUrl(
     kyc.videoThumb || photos[0] || '',
   );
+  const faceImageUrl = await storageService.toAccessUrl(
+    kyc.faceImageUrl || videoThumb || '',
+  );
 
   return {
     id: receiver.id,
@@ -87,6 +90,7 @@ async function publicOnboardingReceiver(receiver) {
     kyc: {
       videoUrl: videoUrl || '',
       videoThumb: videoThumb || '',
+      faceImageUrl: faceImageUrl || '',
       documents,
     },
   };
@@ -118,7 +122,12 @@ async function saveOnboarding(token, payload = {}) {
   }
 
   if (typeof payload.bio === 'string') receiver.bio = payload.bio.trim();
-  if (Array.isArray(payload.languages)) receiver.languages = payload.languages;
+  if (Array.isArray(payload.languages)) {
+    receiver.languages = payload.languages
+      .map(lang => String(lang || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+  }
   if (Array.isArray(payload.photos)) receiver.photos = normalizePhotos(payload.photos);
   if (payload.bank) {
     receiver.bank = {
@@ -132,6 +141,7 @@ async function saveOnboarding(token, payload = {}) {
   const nextKyc = {
     videoUrl: receiver.kyc?.videoUrl || '',
     videoThumb: receiver.kyc?.videoThumb || '',
+    faceImageUrl: receiver.kyc?.faceImageUrl || '',
     documents: normalizeDocuments(receiver.kyc?.documents || []),
   };
   if (Array.isArray(payload.kyc?.documents)) {
@@ -148,6 +158,35 @@ async function saveOnboarding(token, payload = {}) {
       : receiver.photos;
     nextKyc.videoThumb = photos[0] || '';
   }
+  if (payload.kyc?.faceImageUrl) {
+    nextKyc.faceImageUrl = storageService.toStorageUrl(payload.kyc.faceImageUrl);
+  }
+
+  // Video KYC only: block duplicate faces via Rekognition.
+  if (payload.kyc?.videoUrl) {
+    const faceDedup = require('./faceDedup.service');
+    const check = await faceDedup.assertUniqueKycFace({
+      receiver,
+      imageUrl:
+        nextKyc.faceImageUrl ||
+        faceDedup.resolveFaceImageUrl(receiver, nextKyc),
+    });
+    if (!check.ok) {
+      return {
+        ok: false,
+        message: check.message,
+        status: check.status || 409,
+      };
+    }
+    if (check.faceId) {
+      receiver.faceId = check.faceId;
+      receiver.faceIndexedAt = new Date();
+    }
+    if (check.faceImageUrl && !nextKyc.faceImageUrl) {
+      nextKyc.faceImageUrl = check.faceImageUrl;
+    }
+  }
+
   receiver.kyc = nextKyc;
 
   if (receiver.status === 'draft') receiver.status = 'pending_onboarding';
@@ -173,6 +212,9 @@ function validateSubmission(receiver, payload) {
   }
   if (!languages.length) {
     return 'Select at least one language.';
+  }
+  if (languages.length > 3) {
+    return 'You can select a maximum of 3 languages.';
   }
   if (!bank.holderName?.trim() || !bank.accountNumber?.trim() || !bank.ifsc?.trim()) {
     return 'Complete bank account details.';
@@ -225,9 +267,29 @@ async function submitOnboarding(token, payload = {}) {
   const videoThumb = storageService.toStorageUrl(
     merged.kyc.videoThumb || photos[0] || '',
   );
+  const faceImageUrl = storageService.toStorageUrl(
+    merged.kyc.faceImageUrl || videoThumb || photos[0] || '',
+  );
+
+  // Final gate on submit: same face must not belong to another receiver.
+  const faceDedup = require('./faceDedup.service');
+  const check = await faceDedup.assertUniqueKycFace({
+    receiver,
+    imageUrl: faceImageUrl || faceDedup.resolveFaceImageUrl(receiver, merged.kyc),
+  });
+  if (!check.ok) {
+    return {
+      ok: false,
+      message: check.message,
+      status: check.status || 409,
+    };
+  }
 
   receiver.bio = String(merged.bio).trim();
-  receiver.languages = merged.languages;
+  receiver.languages = (Array.isArray(merged.languages) ? merged.languages : [])
+    .map(lang => String(lang || '').trim())
+    .filter(Boolean)
+    .slice(0, 3);
   receiver.photos = photos;
   receiver.bank = {
     holderName: merged.bank.holderName.trim(),
@@ -238,8 +300,13 @@ async function submitOnboarding(token, payload = {}) {
   receiver.kyc = {
     videoUrl,
     videoThumb,
+    faceImageUrl: check.faceImageUrl || faceImageUrl || '',
     documents,
   };
+  if (check.faceId) {
+    receiver.faceId = check.faceId;
+    receiver.faceIndexedAt = new Date();
+  }
   receiver.status = 'pending_review';
   receiver.rejectionReason = '';
   receiver.submittedAt = new Date();
@@ -410,7 +477,7 @@ async function updateProfile(receiverId, payload = {}) {
     const languages = payload.languages
       .map(lang => String(lang || '').trim())
       .filter(Boolean)
-      .slice(0, 12);
+      .slice(0, 3);
     if (!languages.length) {
       return {ok: false, message: 'Select at least one language.'};
     }

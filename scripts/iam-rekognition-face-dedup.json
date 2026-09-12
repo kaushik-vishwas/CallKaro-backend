@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CallkaroRekognitionFaceDedup",
+      "Effect": "Allow",
+      "Action": [
+        "rekognition:CreateCollection",
+        "rekognition:DescribeCollection",
+        "rekognition:DeleteCollection",
+        "rekognition:ListCollections",
+        "rekognition:IndexFaces",
+        "rekognition:SearchFacesByImage",
+        "rekognition:SearchFaces",
+        "rekognition:DeleteFaces",
+        "rekognition:ListFaces",
+        "rekognition:DetectFaces"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
